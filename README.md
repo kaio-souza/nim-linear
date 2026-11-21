@@ -4,9 +4,11 @@
 >
 > **What exists today** (tested locally only, Linux, Nim 2.2.4; CI has not run yet):
 > - history types, `newHistory` and JSON Lines (M1);
-> - `checkLinearizable` with the `Register` model, already handling pending operations and the budget (M2; the acceptance criteria of M3 and M4 are not met yet).
+> - `checkLinearizable` with the `Register` model (M2);
+> - pending operations and the `EventFlag` model, with a lost-wakeup fixture that the checker rejects (M3);
+> - a search budget that returns `vkInconclusive` (part of M4; the memory measurement is not done yet).
 >
-> **Does not exist yet:** `report`, the concurrent recorder, the brute-force oracle, the end-to-end example, and the `EventFlag`, `BoundedQueue` and `CircuitBreaker` models. No milestone is checked in the [Roadmap](#roadmap) until CI confirms it.
+> **Does not exist yet:** `report`, the concurrent recorder, the brute-force oracle, the end-to-end example, and the `BoundedQueue` and `CircuitBreaker` models. No milestone is checked in the [Roadmap](#roadmap) until CI confirms it.
 
 A Nim library, **stdlib only**, that checks whether a history of concurrent operations is **linearizable**: is there a valid sequential order of the operations that explains exactly the observed results?
 

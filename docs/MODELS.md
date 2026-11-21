@@ -54,7 +54,7 @@ Objects whose result depends on the clock (timeouts, TTL, limiters) cannot read 
 
 ## Example models
 
-The models below ship with the library. They serve to test the checker and as a starting point. Only `Register` is implemented today (`nimlinear/models/register`); the others are planned.
+The models below ship with the library. They serve to test the checker and as a starting point. Implemented today: `Register` (`nimlinear/models/register`) and `EventFlag` (`nimlinear/models/eventflag`). The others are planned.
 
 | Model | State | Operations | Use |
 |---|---|---|---|

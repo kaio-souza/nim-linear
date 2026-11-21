@@ -1,0 +1,4 @@
+{"kind":"invoke","op":1,"thread":0,"seq":1,"payload":{"kind":"signal"}}
+{"kind":"return","op":1,"thread":0,"seq":2,"payload":{"kind":"ack"}}
+{"kind":"invoke","op":2,"thread":1,"seq":3,"payload":{"kind":"wait"}}
+{"kind":"return","op":2,"thread":1,"seq":4,"payload":{"kind":"timedOut"}}
