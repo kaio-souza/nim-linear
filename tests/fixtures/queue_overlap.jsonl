@@ -1,0 +1,4 @@
+{"kind":"invoke","op":3,"thread":1,"seq":17,"payload":{"kind":"enqueue","value":7}}
+{"kind":"invoke","op":4,"thread":2,"seq":18,"payload":{"kind":"dequeue"}}
+{"kind":"return","op":3,"thread":1,"seq":19,"payload":{"kind":"ok"}}
+{"kind":"return","op":4,"thread":2,"seq":20,"payload":{"kind":"value","value":7}}

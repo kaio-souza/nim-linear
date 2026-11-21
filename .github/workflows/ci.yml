@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, nim ${{ matrix.nim }}, ${{ matrix.mm }}, threads=${{ matrix.threads }}, ${{ matrix.mode }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        nim: ['2.2.4', '2.4.0']
+        mm: [orc, arc]
+        threads: ['on', 'off']
+        mode: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nim (Linux, official binary)
+        if: runner.os == 'Linux'
+        run: |
+          curl -sSfL "https://nim-lang.org/download/nim-${{ matrix.nim }}-linux_x64.tar.xz" | tar xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nim-${{ matrix.nim }}/bin" >> "$GITHUB_PATH"
+
+      - name: Install Nim (Windows, official binary)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -sSfL -o nim.zip "https://nim-lang.org/download/nim-${{ matrix.nim }}_x64.zip"
+          unzip -q nim.zip -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nim-${{ matrix.nim }}/bin" >> "$GITHUB_PATH"
+
+      - name: Install Nim (macOS)
+        if: runner.os == 'macOS'
+        # TODO: pin the macOS binary like Linux/Windows once the exact asset URL is confirmed.
+        run: brew install nim
+
+      - name: Check Nim version
+        run: nim --version
+
+      - name: Run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(tests/t*.nim)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no test files found in tests/" >&2
+            exit 1
+          fi
+          flags="--hints:off --mm:${{ matrix.mm }} --threads:${{ matrix.threads }}"
+          if [ "${{ matrix.mode }}" = "release" ]; then flags="$flags -d:release"; fi
+          for f in "${files[@]}"; do
+            nim c -r $flags "$f"
+          done
+
+  examples:
+    name: examples (ubuntu-latest, nim 2.2.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nim
+        run: |
+          curl -sSfL "https://nim-lang.org/download/nim-2.2.4-linux_x64.tar.xz" | tar xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nim-2.2.4/bin" >> "$GITHUB_PATH"
+      - name: Compile and run examples
+        run: |
+          shopt -s nullglob
+          for f in examples/*.nim; do
+            nim c -r --hints:off "$f"
+          done
