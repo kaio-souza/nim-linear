@@ -108,7 +108,7 @@ Policy:
 
 - **Milestones go to `master`.** Each finished milestone adds entries under `## Unreleased` in `CHANGELOG.md`.
 - **Before releasing:** full CI matrix green on `master`, and no change to the public API or to the JSON format in the last **7 days** (stabilization period, so real use can find problems first).
-- **At least 7 days between releases.** Single exception: a fix for a bug that makes the checker return a **wrong verdict** (false `vkLinearizable` or false `vkNotLinearizable`). That fix ships alone, as soon as CI passes.
+- **At least 7 days between releases** (not applicable to the first one, which only needs the stabilization period above). Single exception: a fix for a bug that makes the checker return a **wrong verdict** (false `vkLinearizable` or false `vkNotLinearizable`). That fix ships alone, as soon as CI passes.
 - **Numbering:** SemVer `0.x.y` while the API may change. The number is chosen at release time, based on what changed (API or format break: `x`; anything else: `y`). The roadmap does not reserve version numbers for milestones.
 - **Documentation language:** English until v1. Translations come before v1.
 
