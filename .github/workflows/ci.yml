@@ -25,6 +25,11 @@ jobs:
         mm: [orc, arc]
         threads: ['on', 'off']
         mode: [debug, release]
+        # The minimum version in nimlinear.nimble (nim >= 2.2.0), on Linux only.
+        include:
+          - { os: ubuntu-latest, nim: '2.2.0', mm: orc, threads: 'on', mode: debug }
+          - { os: ubuntu-latest, nim: '2.2.0', mm: orc, threads: 'off', mode: release }
+          - { os: ubuntu-latest, nim: '2.2.0', mm: arc, threads: 'on', mode: release }
     steps:
       - uses: actions/checkout@v4
 
@@ -65,32 +70,27 @@ jobs:
 
       - name: Check Nim version matches the matrix
         shell: bash
-        run: nim --version | head -1 | grep -F "Version ${{ matrix.nim }}"
+        # no `head`: it closes the pipe early and nim fails with EPIPE under pipefail
+        run: nim --version | grep -F "Version ${{ matrix.nim }}"
 
       - name: Check Nim version
         run: nim --version
 
-      - name: Run tests
+      - name: Run tests (same runner as `nimble test`)
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(tests/t*.nim)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "no test files found in tests/" >&2
-            exit 1
-          fi
-          flags="--hints:off --mm:${{ matrix.mm }} --threads:${{ matrix.threads }}"
-          if [ "${{ matrix.mode }}" = "release" ]; then flags="$flags -d:release"; fi
-          for f in "${files[@]}"; do
-            nim c -r $flags "$f"
-          done
+          NIMFLAGS="--mm:${{ matrix.mm }} --threads:${{ matrix.threads }}"
+          if [ "${{ matrix.mode }}" = "release" ]; then NIMFLAGS="$NIMFLAGS -d:release"; fi
+          export NIMFLAGS
+          nim e tools/run.nims
 
       # Diagnosis for an intermittent SIGSEGV seen once in tests/trounds.nim
       # (Windows, orc, threads on, release): repeat it with stack traces, so a
       # crash shows where it happened.
       - name: Repeat trounds with stack traces (Windows, threads on)
-        if: runner.os == 'Windows' && matrix.threads == 'on'
+        # always(): run it even when the test step failed, to get the trace
+        if: always() && runner.os == 'Windows' && matrix.threads == 'on'
         shell: bash
         run: |
           set -euo pipefail
@@ -112,12 +112,8 @@ jobs:
         run: |
           curl -sSfL "https://nim-lang.org/download/nim-2.2.4-linux_x64.tar.xz" | tar xJ -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nim-2.2.4/bin" >> "$GITHUB_PATH"
-      - name: Compile and run examples
-        run: |
-          shopt -s nullglob
-          for f in examples/*.nim; do
-            nim c -r --hints:off "$f"
-          done
+      - name: Compile and run examples (same runner as `nimble examples`)
+        run: NIMLINEAR_RUN=examples nim e tools/run.nims
 
   bench:
     name: bench regression check (ubuntu-latest, nim 2.2.4)
@@ -129,5 +125,5 @@ jobs:
         run: |
           curl -sSfL "https://nim-lang.org/download/nim-2.2.4-linux_x64.tar.xz" | tar xJ -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nim-2.2.4/bin" >> "$GITHUB_PATH"
-      - name: Run benchmarks with --check
-        run: nim c -r -d:release --mm:orc --hints:off tests/measure/bench.nim --check
+      - name: Run benchmarks with --check (same runner as `nimble bench`)
+        run: NIMLINEAR_RUN=bench nim e tools/run.nims

@@ -1,35 +1,44 @@
 # Changelog
 
-Format: each finished milestone adds entries under `## Unreleased`. Changes to the public API or to the JSON format are marked as **breaking**. See [Release policy](README.md#release-policy).
+Each release lists what changed for users. Changes to the public API or to the saved JSON format are marked **breaking**. Work in progress accumulates under `## Unreleased`; see [Release policy](README.md#release-policy). Milestone numbers (M0…M24) refer to the [Roadmap](README.md#roadmap).
 
 ## Unreleased
 
-- M0: project layout (`nimlinear.nimble`, `src/`, `tests/`), `nimble test` task and minimal test `tests/tsmoke.nim`.
-- M1: types `OpId`, `ThreadId`, `SeqNo`, `Event`, `History`; `newHistory` validates the invariants and sorts by `seq`; `toJsonLines`/`parseJsonLines` with `toPayload`/`fromPayload` hooks; byte-for-byte round trip tested. Additions not in the API draft: `ArgumentError` (defined by the library, `object of CatchableError`), `invokeEvent`/`returnEvent` and `==` for `Event`.
-- M2: `checkLinearizable` as a graph search memoizing `(linearized, state)` (D-11), candidates in `invoke` `seq` order (D-20), `Witness` with prefix, stuck operation and alternatives; `Expected` type; `Register` model in `nimlinear/models/register` (with JSON hooks). Negative compilation test for a `step` that raises. Pending operations and the budget are already implemented in the same loop; the acceptance criteria of M3 (`EventFlag` fixture) and M4 (memory measurement) are still open.
-- M3: `EventFlag` model in `nimlinear/models/eventflag` (with JSON hooks); lost-wakeup fixture `tests/fixtures/eventflag_lost_wakeup.jsonl` rejected by the checker; tests for both possibilities of pending operations (D-08).
-- M4: `checkLinearizable` already enforced budget/`vkInconclusive`; added optional `-d:nimlinearMeasure` sampling (`getOccupiedMem()` every 1024 visited configurations and at the end; prints peak minus start), the `tests/measure/measure.nim` harness and `docs/MEASUREMENTS.md` with preliminary local measurements.
-- M5: `report` proc renders stable verdict text for `vkLinearizable`, `vkNotLinearizable`, and `vkInconclusive`; re-exported from `nimlinear`; golden snapshots in `tests/golden/` lock the format.
-- M6: brute-force oracle and history generator in `tests/oracle/` (random scheduler over 1–3 threads, 1–8 ops, 10% pending, 50% with one swapped result); `tests/toracle.nim` checks agreement with `checkLinearizable` over 10,000 seeds for `Register` and for `BoundedQueue`.
-- M7: concurrent `Recorder` (`nimlinear/recorder`, `--threads:on`) with a shared atomic `seq` counter, per-thread buffers, the thread encoded in the `OpId` (no locks while recording), and merge-by-seq `snapshot`; re-exported from `nimlinear` when threads are enabled. Tests cover multi-thread recording and misuse detection.
-- M8 groundwork: `BoundedQueue` model in `nimlinear/models/boundedqueue` with tests; end-to-end example not yet added.
-- M10 (**breaking**, JSON format): time as an event. New `EventKind` value `ekTick` (`"tick"` in JSON Lines), `tickEvent` constructor and `Recorder.tick`; `newHistory` validates ticks (no `return`, unique id, does not open its thread); the checker linearizes a tick exactly at its `seq` and does not compare its result (D-22). The M6 oracle and generator support ticks.
-- M11: `checkPartitioned` (D-12): splits by `partition(model, op)`, checks parts in increasing key order with the budget per part, copies ticks into every part, and combines verdicts as documented in `docs/API.md`. Tested against the oracle and `checkLinearizable` on 10,000 random histories of a test-only TTL map model (`tests/oracle/kvttl.nim`).
-- M8: end-to-end example `examples/queue_race.nim`: a lock-based bounded queue with an injectable check-then-act bug in `dequeue`, recorded with `Recorder` from 3 threads and checked against `BoundedQueue`. Exits 0 only if the correct queue is linearizable in all 300 rounds and the buggy one is rejected; saves the failing history as JSON Lines. `examples/config.nims` adds `src/` to the path.
-- M12: optional module `nimlinear/perturb` (not imported by the core): `perturb()` points, empty without `-d:nimlinearPerturb`; with the flag, a per-thread seeded draw between nothing, `cpuRelax` and `sleep(0)`; `setPerturbation(enabled, seed)`. The example queue moved to `examples/common/queue.nim`, gained a narrow-window bug mode, and `examples/queue_perturb.nim` checks that perturbation finds it in fewer rounds.
-- M13: optional module `nimlinear/schedule`: `Scheduler` with PCT (random priorities, `depth - 1` change points), one thread running at a time, switching at `perturb()`, `enter` and `leave`. `examples/queue_pct.nim` checks byte-for-byte reproduction for a fixed seed and finds the M8 bug within 50 seeds.
-- `CircuitBreaker` model in `nimlinear/models/circuitbreaker` (with JSON hooks), as specified in `docs/MODELS.md`, plus a `tick` operation for the cool-down (M10). Tests cover the bugs listed in the docs, the cool-down with ticks, and agreement with the oracle on 10,000 random histories.
-- `Recorder.record` template: `begin`, body, `finish`, returning the result; the op stays pending if the body raises. The example queue uses it.
-- M14 (**breaking**, API): nondeterministic specifications through an optional `outcomes(m, s, op): seq[Expected[S, Res]]`; the checker branches over matching outcomes (all of them for pending operations and ticks); `hasOutcomes` template; tested with a bag and a weak-CAS model against the oracle (10,000 histories each). The oracle and generator support `outcomes` (D-23).
-- M15 (**breaking**, format): JSON Lines starts with `{"nimlinear":1}`; files without it still parse; unknown versions are rejected; `formatVersion` constant. Fixtures updated.
-- M16: `shrink` (greedy, deterministic; keeps the stuck operation and its expected result, D-24).
-- M17: `runRounds`/`runRound`/`describe` (`nimlinear/rounds`, `--threads:on`): per-round object, seeded operations, recording, check, shrink and save. The examples use it; `queue_race.nim` went from 54 to about 25 lines.
-- M18: `timeline`, `report(v, h)` and `timelineHtml`; `report` prints `stopped by: timeout` when applicable.
-- M19: `SchedLock` for `nimlinear/schedule` (waiting yields; `perturb()` inside critical sections is safe; `deadlocked` flag).
-- M20 (**breaking**, API): `timeout` for `checkLinearizable` and `checkPartitioned`; `Verdict.timedOut` in `vkInconclusive`.
-- M21: `partition` may return any type with `hash`, `==` and `<`.
-- M22: search key `(f, window)`, incremental `minRet`, candidate scan from `f`, return lookup by table (D-25): long histories are linear (40 000 operations in about 20 ms; 20 000 took 1.26 s before).
-- M23: benchmark suite `tests/measure/bench.nim` (shapes A–E, `--export`, `--check` in a new CI job) and a Porcupine runner in `tests/measure/porcupine` (Go, not in CI); results in `docs/MEASUREMENTS.md`.
-- M24 (**breaking**, API): `History` fields are private (`events` accessor, `newHistoryUnchecked`); async usage documented; macOS CI builds the exact Nim version from source and every job checks the Nim version.
-- Review fixes: with `outcomes`, a pending operation with no outcome is not applied (never `stuck`); ticks are indexed, and `stuck` is reset per failure (no stale value); `budget < 1` is treated as 1; `Recorder.finish` from a thread that did not `begin` is misuse and does not write (it raced before); one active `Scheduler` at a time (`ValueError`); `RoundsConfig` validated; **breaking**: `newHistoryUnchecked` replaced by `subHistory`; `-d:nimlinearVerifyPartition` cross-check; `tsmoke` checks the version against the `.nimble` file.
-- Documentation translated to English; files in `docs/` renamed (`API.md`, `DECISIONS.md`, `GUIDE.md`, `HISTORY.md`, `MODELS.md`).
+Nothing has been released yet. The first release will contain everything below. Intermediate API changes made before it are not listed as breaking, since no version had them.
+
+### History and format
+
+- `Event`, `History`, `OpId`/`ThreadId`/`SeqNo`; `newHistory` validates and sorts; `History` fields are private (`events` accessor) and `subHistory` takes whole operations out of a valid history (M1, M24).
+- Pending operations (invoke without return), considered both applied and not applied (M3, D-08).
+- Time as an event: `ekTick`, `tickEvent`, `Recorder.tick` (M10, D-22).
+- JSON Lines with `toPayload`/`fromPayload` hooks, byte-for-byte round trip, and a first line `{"nimlinear":1}`; files without it still parse; unknown versions are rejected (M1, M15, D-23).
+
+### Checking
+
+- `checkLinearizable`: graph search memoizing `(linearized, state)` (D-11), deterministic order (D-20), `budget` and `vkInconclusive` (M2, M4), optional wall-clock `timeout` with `timedOut` (M20). `budget < 1` counts as 1.
+- Linear time on long histories with bounded overlap: memo key `(f, window)`, incremental `minRet` (M22, D-25). 40 000 operations in about 20 ms.
+- Nondeterministic specifications through `outcomes` (M14, D-23); `hasOutcomes`.
+- `checkPartitioned` for P-compositional models (M11, D-12), with any key type that has `hash`, `==` and `<` (M21); ticks go into every part; `-d:nimlinearVerifyPartition` cross-checks a new `partition` against the unpartitioned search.
+- Witness with longest prefix, stuck operation and alternatives; pending operations are never stuck.
+
+### Diagnostics
+
+- `report` (stable, golden-tested), `timeline`, `report(v, h)` and the standalone `timelineHtml` (M5, M18).
+- `shrink`: deterministic minimization that keeps the stuck operation and its expected result (M16, D-24).
+
+### Recording and running
+
+- `Recorder` (`--threads:on`): per-index buffers, atomic `seq`, `record` template, `snapshot` (M7). An index may `begin` on one OS thread and `finish` on another (async tasks that migrate); two calls using one index at the same time are reported as misuse instead of racing.
+- `runRounds`/`runRound`/`describe`: seeded rounds against a real object, check, shrink, save (M17); `RoundsConfig` is validated.
+- Optional modules, not imported by the core: `nimlinear/perturb` (`perturb()` points, empty without `-d:nimlinearPerturb`, M12) and `nimlinear/schedule` (PCT `Scheduler`, `SchedLock`, one active scheduler at a time, M13, M19, D-18).
+
+### Models
+
+- `Register`, `EventFlag`, `BoundedQueue`, `CircuitBreaker` (with the cool-down as `tick`) in `nimlinear/models/*`, each with JSON hooks.
+
+### Examples, tests and tooling
+
+- `examples/quickstart.nim` (the README quickstart, checked by `tests/treadme.nim`), `examples/queue_race.nim` (M8), `examples/queue_perturb.nim`, `examples/queue_pct.nim`.
+- Brute-force oracle with random histories (pending operations, ticks, `outcomes`), 10 000 histories per model (M6).
+- Benchmark suite with a Porcupine comparison and a regression `--check` (M23); results in `docs/MEASUREMENTS.md`.
+- One runner for `nimble test`/`examples`/`bench` and CI (`tools/run.nims`); CI on Linux, macOS, Windows × Nim 2.2.4, 2.4.0 × orc/arc × threads on/off × debug/release, plus Nim 2.2.0 on Linux; release workflow on `vX.Y.Z` tags.

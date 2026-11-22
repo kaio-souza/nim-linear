@@ -38,20 +38,23 @@ docs/
 
 ## Running the tests
 
-CI (`.github/workflows/ci.yml`) compiles and runs each `tests/t*.nim` with `nim c -r` and **fails if there are none**. Locally, use the same form:
+CI (`.github/workflows/ci.yml`) and `nimble test` use the same runner, `tools/run.nims`: it compiles and runs each `tests/t*.nim` and **fails if there are none**. Extra flags go in `NIMFLAGS`; per-file options go in `<file>.nims` next to the file (`tests/tschedule.nims`, `tests/trounds.nims`). Locally:
 
 ```sh
-nimble test                                   # task defined in the .nimble; runs every tests/t*.nim
-nim c -r --threads:on --mm:orc tests/tsmoke.nim   # a single file
+nimble test                                      # every tests/t*.nim
+NIMFLAGS="--mm:arc --threads:off -d:release" nimble test   # one CI combination
+nimble examples                                  # every examples/*.nim
+nimble bench                                     # benchmark suite with --check
+nim c -r --threads:on tests/tsmoke.nim           # a single file
 ```
 
-The `.nimble` `test` task must repeat the CI loop (every `tests/t*.nim`), so that local runs and CI run the same set. The CI matrix covers Linux/macOS/Windows × Nim 2.2.4/2.4.0 × `orc`/`arc` × `threads on/off` × debug/release.
+The CI matrix covers Linux/macOS/Windows × Nim 2.2.4/2.4.0 × `orc`/`arc` × `threads on/off` × debug/release, plus Nim 2.2.0 (the minimum in the `.nimble`) on Linux.
 
 Rules:
 
 - Recorder tests start with `when not compileOption("threads"): skip()`.
 - `report` snapshots live in `tests/golden/<fixture>.txt`. To update them, run the test with `-d:nimlinearUpdateGolden` and review the diff before committing.
-- No test depends on wall-clock time or on `HashSet`/`Table` order.
+- No test depends on wall-clock time or on `HashSet`/`Table` order. Tests that need a specific interleaving run under `nimlinear/schedule` (see `tests/trounds.nim`); the timeout test uses an already-expired timeout. The examples and the benchmark measure behavior under the real OS scheduler, so they keep wide margins.
 
 ## Brute-force oracle (M6)
 
@@ -86,3 +89,14 @@ M6 criterion: 10 000 histories with no disagreement. A disagreement becomes a fi
 ## Commits
 
 Short messages in the imperative mood. A change to the saved format (D-05) never goes in the same commit as another change.
+
+## Releasing
+
+Follow the [Release policy](README.md#release-policy) first (green CI on `master`, 7 days without API or format changes, at least 7 days since the previous release).
+
+1. Pick the number `X.Y.Z` (SemVer `0.x.y`: an API or format break bumps `x`).
+2. Set it in `nimlinear.nimble` (`version`) and `src/nimlinear.nim` (`nimlinearVersion`); `tests/tsmoke.nim` checks they match.
+3. In `CHANGELOG.md`, rename `## Unreleased` to `## X.Y.Z` and add a new empty `## Unreleased` above it.
+4. Commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+5. `.github/workflows/release.yml` checks the tag against both versions and the changelog, runs the tests and examples, and publishes the GitHub release with the changelog section as notes.
+6. First release only: open a pull request to [nim-lang/packages](https://github.com/nim-lang/packages) adding `nimlinear` (later versions are picked up from the tags).

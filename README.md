@@ -1,32 +1,16 @@
 # nimlinear
 
-> **Status: in development, not released.** Most of this documentation describes what the library **is meant** to do, not what it already does. The API is a draft and may change until the first release.
->
-> **What exists today** (M0–M8 and M10–M13, confirmed by the CI matrix: Linux, macOS, Windows × Nim 2.2.4, 2.4.0):
-> - history types, `newHistory` and JSON Lines (M1);
-> - `checkLinearizable` with the `Register` model (M2);
-> - pending operations and the `EventFlag` model, with a lost-wakeup fixture that the checker rejects (M3);
-> - a search budget that returns `vkInconclusive`, plus optional `-d:nimlinearMeasure` sampling and measurements in [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) (M4);
-> - stable `report` text and golden snapshots for verdicts (M5);
-> - a brute-force oracle test comparing 10,000 random histories per model against the checker (M6);
-> - a concurrent `Recorder` with `--threads:on`: per-thread buffers, no locks while recording, merged in `snapshot`, plus the `record` template (M7);
-> - the end-to-end example [`examples/queue_race.nim`](examples/queue_race.nim) with the `BoundedQueue` model (M8);
-> - time as an event (`tick`, M10), `checkPartitioned` (M11), perturbation points (`nimlinear/perturb`, M12) and the PCT scheduler (`nimlinear/schedule`, M13), each with its example or tests;
-> - the `CircuitBreaker` model, with the cool-down as `tick`.
->
-> **On `master`, not yet confirmed by CI:** M14–M24 from the review of 2026-11-22 ([`docs/COMPARISON.md`](docs/COMPARISON.md)): nondeterministic specifications (`outcomes`), a version line in JSON Lines, `shrink`, the `runRounds` harness, a timeline in reports (text and HTML), `SchedLock`, a wall-clock `timeout`, any ordered partition key, a linear-time search on long histories, a benchmark suite with a Porcupine comparison ([benchmarks](docs/MEASUREMENTS.md#benchmarks)), and smaller items. All tests and examples pass locally (Linux, Nim 2.2.4).
->
-> **Known limits:** many pending operations in a long history make the search grow faster than linearly; `shrink` uses a heuristic guard (D-24); the scheduler switches only at points placed by hand.
->
-> **Does not exist yet:** a release on the nimble index (M9). A milestone is checked in the [Roadmap](#roadmap) only after CI confirms it.
+[![CI](https://github.com/kaio-souza/nim-linear/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kaio-souza/nim-linear/actions/workflows/ci.yml)
 
 A Nim library, **stdlib only**, that checks whether a history of concurrent operations is **linearizable**: is there a valid sequential order of the operations that explains exactly the observed results?
 
-## What it is for (in one sentence)
+> **Status: not released yet** (M9 pending). Everything described here exists on `master` and runs in CI (Linux, macOS, Windows × Nim 2.2.0 on Linux, 2.2.4, 2.4.0). The API may still change before the first release; changes are listed in [`CHANGELOG.md`](CHANGELOG.md). Known limits are in [Limits](#limits) and [`docs/COMPARISON.md`](docs/COMPARISON.md).
 
-Stress tests catch crashes and some race conditions. They do not catch two concurrent operations that finish "normally" but with a result no sequential order would produce. The goal of nimlinear is to record the history of a concurrent execution and answer whether it can be explained.
+## What it is for
 
-An example of a bug it is meant to catch and a regular stress test does not, in a concurrent queue:
+Stress tests catch crashes and some race conditions. They do not catch two concurrent operations that finish "normally" but with a result no sequential order would produce. nimlinear records the history of a concurrent execution and answers whether it can be explained.
+
+An example of a bug it catches and a regular stress test does not, in a concurrent queue:
 
 ```
 thread A: enqueue(7) -> ok
@@ -34,7 +18,7 @@ thread B: dequeue()  -> 7
 thread C: dequeue()  -> 7      (the same element delivered twice)
 ```
 
-No sequential order of a queue hands a single `7` to two `dequeue` calls. The checker is meant to return `vkNotLinearizable` pointing at the operation that does not fit (the `BoundedQueue` model exists; the end-to-end example with a real queue does not yet).
+No sequential order of a queue hands a single `7` to two `dequeue` calls. The checker returns `vkNotLinearizable` and points at the operation that does not fit; [`examples/queue_race.nim`](examples/queue_race.nim) finds exactly this bug in a real lock-based queue.
 
 ## Documentation index
 
@@ -84,89 +68,84 @@ Use it for objects whose operations should look **atomic**: each call has a poin
 
 **User prerequisite:** before writing the test, state for each operation what the sequential model is and why it can be treated as atomic. If you cannot, this library is not the right tool.
 
-## Usage example (draft)
+## Quickstart
 
-> Draft: `checkLinearizable`, `report`, `Recorder` (with `--threads:on`) and the `Register` model exist, but this snippet is abbreviated (the `...` stands for the thread code) and is not compiled by any test. For a runnable version, see [`examples/queue_race.nim`](examples/queue_race.nim) (M8).
+A register behind a lock, run from 3 threads for 100 short rounds, each round checked against the `Register` model. This is [`examples/quickstart.nim`](examples/quickstart.nim), compiled and run in CI; `tests/treadme.nim` checks that the block below is identical to the file.
 
-A shared register with `read`, `write` and `cas`. Full model in [Models](docs/MODELS.md#register).
-
+<!-- quickstart:begin -->
 ```nim
+# Quickstart: check a shared register under real threads.
+# nim c -r --threads:on examples/quickstart.nim
+import std/[locks, random]
 import nimlinear
+import nimlinear/models/register
 
-var rec = newRecorder[RegOp, RegRes](threads = 2)
-# each thread records invoke/return around each call to the real register
-# (see docs/HISTORY.md#concurrent-recording-recorder)
-...
-let verdict = checkLinearizable(rec.snapshot(), RegState(value: 0), RegisterModel,
-                                budget = 100_000)
-case verdict.kind
-of vkLinearizable: discard
-of vkNotLinearizable: echo verdict.report     # operation that does not fit + prefix + alternatives
-of vkInconclusive: echo "budget exhausted after ", verdict.statesExplored, " states"
+type Reg = object      # the object under test: a register behind a lock
+  lock: Lock
+  value: int
+
+proc setup(r: var Reg) = initLock r.lock
+proc teardown(r: var Reg) = deinitLock r.lock
+
+proc genOp(rng: var Rand, thread, index: int): RegOp =
+  case rng.rand(2)
+  of 0: read()
+  of 1: write(rng.rand(1..3))
+  else: cas(rng.rand(0..3), rng.rand(1..3))
+
+proc exec(r: ptr Reg, op: RegOp): RegRes {.gcsafe.} =
+  withLock r.lock:
+    result = RegRes(ok: true)
+    case op.kind
+    of rRead: result.value = r.value
+    of rWrite: r.value = op.value
+    of rCas:
+      if r.value == op.expected: r.value = op.desired
+      else: result.ok = false
+
+let res = runRounds(RoundsConfig(threads: 3, rounds: 100, opsPerThread: 4),
+                    RegState(value: 0), RegisterModel, setup, genOp, exec, teardown)
+echo res.describe           # on failure: shrunk report, timeline, saved file
+quit(if res.passed: 0 else: 1)
+```
+<!-- quickstart:end -->
+
+```sh
+nim c -r --threads:on examples/quickstart.nim
 ```
 
-Details in [API](docs/API.md), [Models](docs/MODELS.md) and the [Usage guide](docs/GUIDE.md).
+If a round is not linearizable, `runRounds` stops, shrinks the history, saves it as JSON Lines and `describe` prints the report with a timeline. Lower-level pieces (the `Recorder`, `checkLinearizable`, `report`) are in [API](docs/API.md); writing your own model is in [Models](docs/MODELS.md); the step-by-step adoption is in the [Usage guide](docs/GUIDE.md).
 
 ## Guarantees
 
-These are design goals. Today they apply only to the code that already exists (history, JSON, checker, report and recorder) and have been verified by the tests in the CI matrix.
-
 - **No external dependencies.** Only `std/*`: `atomics`, `locks`, `json`, `hashes`, `sets`, `tables`, `random`, `unittest` (and `monotimes`, for diagnostics only).
-- **The core does not raise.** `checkLinearizable` is `{.raises: [].}`; the contract requires the model's `step` to be as well. Usage errors (invalid history) show up earlier, in `newHistory`/`parseJsonLines`.
-- **Determinism.** No result depends on wall-clock time or on `HashSet` iteration order. Reports are ordered by `seq`.
+- **The core does not raise.** `checkLinearizable` is `{.raises: [].}`; the contract requires the model's `step`/`outcomes` to be as well. Usage errors (invalid history) show up earlier, in `newHistory`/`parseJsonLines`.
+- **Determinism.** The verdict and the report depend only on the history, the model and `init`: not on wall-clock time (unless you pass a `timeout`) or on `HashSet` iteration order. Reports are ordered by `seq`.
 - **Honest results.** `vkInconclusive` is never treated as success or as failure.
 
 ## Limits
 
-- The checker is exponential in the worst case (the problem is NP-complete). In practice, with memoization: **2 to 4 threads, a few dozen operations per history**. Histories of a few hundred operations are possible, but not the default use case.
-- It observes **one real execution**. It does not explore interleavings; bugs that only show up in another order are not detected. Exhaustive exploration is a different project (see [Decisions](docs/DECISIONS.md), D-07). Optional modules increase the variety of orders by sampling (M12, M13, D-18), without promising coverage.
+- The checker is exponential in the worst case (the problem is NP-complete): about 16 fully overlapping register operations or 8 fully overlapping queue operations per second of checking (see [benchmarks](docs/MEASUREMENTS.md#benchmarks)). Long histories with bounded overlap are linear (40 000 operations in about 20 ms), except with many pending operations. Keep rounds small: 2 to 4 threads, a few operations each.
+- `shrink` uses a heuristic guard against artificial failures (D-24); `checkPartitioned` trusts the model's `partition` (use `-d:nimlinearVerifyPartition` while validating a new one).
+- It observes **one real execution**. It does not explore interleavings; bugs that only show up in another order are not detected. Exhaustive exploration is a different project (see [Decisions](docs/DECISIONS.md), D-07). Optional modules increase the variety of orders by sampling (`nimlinear/perturb`, `nimlinear/schedule`, D-18), without promising coverage; the scheduler switches threads only at points placed by hand.
 - It only covers **sequential consistency** (linearizability). Relaxed orderings (acquire/release) are not modeled. A classic example nimlinear does not see (*store buffering*): thread 1 does `x = 1; r1 = y`, thread 2 does `y = 1; r2 = x`, with relaxed accesses; the result `r1 = 0` and `r2 = 0` is possible on hardware, but no sequential order produces it (see [Weave PR #127](https://github.com/mratsim/weave/pull/127)).
 - **Linearizability is safety, not liveness.** An operation that never returns (deadlock, lost wakeup without a timeout) shows up as pending and is not a violation. To catch that class, the test needs a `wait` with a timeout whose result contradicts the model, or a watchdog (see [Models](docs/MODELS.md#eventflag-and-lost-wakeup)).
 
 ## Roadmap
 
-Items in order. Each one has an acceptance criterion. A milestone (M0, M1…) is a **unit of work**, not a version: finishing a milestone does not produce a release. When to release is described in [Release policy](#release-policy).
+A milestone (M0, M1…) is a unit of work, not a version (see [Release policy](#release-policy)). A box is checked only after the CI matrix confirms it. What each milestone delivered is in [`CHANGELOG.md`](CHANGELOG.md).
 
-**Core** (the first release happens when all of them are done)
-
-- [x] **M0. Project** (`nimlinear.nimble` with `license = "MIT"`, `CHANGELOG.md`, layout from [CONTRIBUTING](CONTRIBUTING.md); `LICENSE`, `.gitattributes` and `.github/workflows/ci.yml` already created). Acceptance: the CI matrix passes with a minimal test `tests/tsmoke.nim` (CI fails on purpose when there is no `tests/t*.nim`).
-- [x] **M1. History types and JSON** (`Event`, `History`, distinct ids, `newHistory`, `toJsonLines`/`parseJsonLines`). Acceptance: a JSON round trip preserves bytes; invalid histories raise `ArgumentError`.
-- [x] **M2. Checker** as a graph search, memoizing `(linearized, state)` for successes and failures (D-11), using the `Register` model. Acceptance: hand-written linearizable and non-linearizable fixtures; deterministic `order` (D-20); a negative compilation test shows that a `step` that can raise does not compile.
-- [x] **M3. Pending operations** (D-08). Acceptance: the checker accepts both possibilities; an `EventFlag` lost-wakeup fixture with a timed `wait` is rejected.
-- [x] **M4. Budget** and the `vkInconclusive` verdict. Acceptance: a low budget gives `vkInconclusive`; a sufficient budget gives a definitive verdict; peak memory measured and recorded in `docs/MEASUREMENTS.md` (method in [CONTRIBUTING](CONTRIBUTING.md#memory-measurement-m4)).
-- [x] **M5. Diagnostics** (D-14): `Witness` with alternatives and a stable `report`. Acceptance: snapshots in `tests/golden/` identical on Linux, macOS and Windows.
-- [x] **M6. Brute-force oracle** for up to ~8 operations, with a fixed seed (generator described in [CONTRIBUTING](CONTRIBUTING.md#brute-force-oracle-m6)). Acceptance: agrees with the checker on 10 thousand random histories.
-- [x] **M7. Concurrent recorder** with `Atomic[int]` and a final merge. Acceptance: N threads record; each operation has one `invoke` and one `return`; unique `seq`.
-- [x] **M8. End-to-end example** in `examples/`: a real concurrent queue with an injectable bug, and a test that fails with the bug and passes without it. Acceptance: runs in CI.
-- [ ] **M9. Release** on the nimble index.
-
-**Optional** (they go into later releases, following the policy below)
-
-- [x] **M10. Time as an event** (`tick`, see [History](docs/HISTORY.md#time)).
-- [x] **M11. `checkPartitioned`** (D-12), for P-compositional models (maps by key).
-- [x] **M12. Perturbation** (D-18): module `nimlinear/perturb` with a fixed-seed `perturb()`, empty without `-d:nimlinearPerturb`. Acceptance: in the M8 example, the injected bug fails in fewer rounds with perturbation than without; the core compiles and passes its tests without importing the module.
-- [x] **M13. PCT scheduler** (D-18), optional: module `nimlinear/schedule`. Acceptance: the same seed produces the same history, byte for byte, across repeated runs; the M8 bug is found within a documented round budget (50 seeds, one round each).
-
-**Refinement** (gaps from the review of 2026-11-22, compared with Porcupine, Knossos and Lincheck; reasons in [Comparison](docs/COMPARISON.md)). M14 and M15 change the API or the saved format, so they should land before M9.
-
-- [ ] **M14. Nondeterministic specifications**: a model contract that receives the observed result (`accepts(state, op, res): Option[S]`), next to `step`. Acceptance: a bag model whose `take` may return any item, and a weak CAS that may fail spuriously, both checked against the oracle on 10,000 random histories.
-- [ ] **M15. Format version** in JSON Lines (optional first line). Acceptance: files without the line still parse; a file with an unknown version is rejected with a clear `ValueError`.
-- [ ] **M16. Minimization** (`shrink`). Acceptance: on the M8 failure, the shrunk history is still rejected, is no larger than the original, and the same input always gives the same output.
-- [ ] **M17. Round harness** (`runRounds`). Acceptance: `examples/queue_race.nim` rewritten with it, in fewer lines, with the same behavior.
-- [ ] **M18. Timeline in the report** (ASCII, golden-tested) and an optional standalone HTML file.
-- [ ] **M19. `SchedLock`** for `nimlinear/schedule`. Acceptance: a bug inside a critical section is found under the scheduler without hanging.
-- [ ] **M20. Wall-clock timeout** next to `budget`, giving `vkInconclusive`.
-- [ ] **M21. Generic partition key** (any type with `hash`, `==`, `<`).
-- [ ] **M22. Linear-time search on long histories.** Acceptance: shape C of the [benchmarks](docs/MEASUREMENTS.md#benchmarks) grows linearly (20 000 ops in at most about 2.5 × the time of 10 000), with every existing test still passing.
-- [ ] **M23. Benchmark suite**: shapes A–C plus partitioned and pending cases, exported for Porcupine, with a side-by-side table and a CI job that catches large regressions.
-- [ ] **M24. Small items**: `History` construction only through `newHistory`, async usage documented, macOS Nim pinned in CI.
+- [x] **M0–M8. Core**: project and CI, history types and JSON Lines, checker with memoized graph search, pending operations, budget, diagnostics, brute-force oracle, concurrent recorder, end-to-end example.
+- [ ] **M9. First release** on the nimble index.
+- [x] **M10–M13. Optional features**: time as an event (`tick`), `checkPartitioned`, perturbation points, PCT scheduler.
+- [ ] **M14–M24. Refinement** after comparing with Porcupine, Knossos and Lincheck ([`docs/COMPARISON.md`](docs/COMPARISON.md)): nondeterministic specifications (`outcomes`), format version line, `shrink`, `runRounds`, timeline (text and HTML), `SchedLock`, wall-clock timeout, generic partition key, linear-time search, benchmark suite with a CI check, private `History` fields. Implemented on `master`; to be checked when CI is green.
 
 ## Release policy
 
 The work is done with AI agents: small milestones are ready in hours. Releasing at every milestone would produce several versions on the same day, and users would have to follow updates with no real gain. So **finishing work and releasing are separate things** (D-21).
 
 - **Milestones go to `master`, not to the nimble index.** Each finished milestone adds entries under `## Unreleased` in `CHANGELOG.md`.
-- **A release bundles a set of changes that makes sense to users**, not a milestone. The first one requires the whole core (M0–M9).
+- **A release bundles a set of changes that makes sense to users**, not a milestone. The first one requires the whole core (M0–M9). Releases are made by pushing a `vX.Y.Z` tag; `.github/workflows/release.yml` checks it and publishes the GitHub release (see [CONTRIBUTING](CONTRIBUTING.md#releasing)).
 - **Before releasing:** full CI matrix green on `master`, and no change to the public API or to the JSON format in the last **7 days** (stabilization period, so real use can find problems first).
 - **At least 7 days between releases.** Single exception: a fix for a bug that makes the checker return a **wrong verdict** (false `vkLinearizable` or false `vkNotLinearizable`). That fix ships alone, as soon as CI passes.
 - **Numbering:** SemVer `0.x.y` while the API may change. The number is chosen at release time, based on what changed (API or format break: `x`; anything else: `y`). The roadmap does not reserve version numbers for milestones.

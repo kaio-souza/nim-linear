@@ -1,0 +1,51 @@
+name: Release
+
+# Push a tag `vX.Y.Z` to release. The workflow checks that the tag matches
+# `version` in nimlinear.nimble and `nimlinearVersion` in src/nimlinear.nim,
+# that CHANGELOG.md has a `## X.Y.Z` section, runs the tests and examples,
+# and publishes a GitHub release with that CHANGELOG section as notes.
+# Publishing to the nimble index is a manual pull request to nim-lang/packages
+# (see CONTRIBUTING.md#releasing).
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nim
+        run: |
+          curl -sSfL "https://nim-lang.org/download/nim-2.2.4-linux_x64.tar.xz" | tar xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nim-2.2.4/bin" >> "$GITHUB_PATH"
+
+      - name: Check versions and changelog
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          nimble_v=$(grep -E '^version' nimlinear.nimble | cut -d'"' -f2)
+          src_v=$(grep -E 'nimlinearVersion\*' src/nimlinear.nim | cut -d'"' -f2)
+          echo "tag=$tag nimble=$nimble_v src=$src_v"
+          [ "$tag" = "$nimble_v" ] || { echo "tag does not match nimlinear.nimble" >&2; exit 1; }
+          [ "$tag" = "$src_v" ] || { echo "tag does not match nimlinearVersion" >&2; exit 1; }
+          awk -v v="## $tag" '$0 == v {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no '## $tag' section" >&2; exit 1; }
+
+      - name: Tests and examples
+        run: |
+          nim e tools/run.nims
+          NIMLINEAR_RUN=examples nim e tools/run.nims
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag

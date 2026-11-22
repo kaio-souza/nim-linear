@@ -1,6 +1,6 @@
 # API
 
-> Draft. Names and signatures may change until the first release. After it, every change on this page goes into `CHANGELOG.md`, under `## Unreleased` (see [Release policy](../README.md#release-policy)).
+> Not released yet: names and signatures may change until the first release. Every change to this page is listed in `CHANGELOG.md` under `## Unreleased` (see [Release policy](../README.md#release-policy)).
 
 ## Overview
 
@@ -92,14 +92,15 @@ type Expected*[S, Res] = object
   res*: Res         # result the specification expects
   why*: string      # reason, when the result is a refusal (empty otherwise)
 
-type Model*[S, Op, Res] = concept type M
-  step(M, S, Op) is Expected[S, Res]   # pure func, {.raises: [].}
-  hash(S) is Hash                      # from std/hashes
-  `==`(S, S) is bool
-  `==`(Res, Res) is bool
+# Documentation only: there is no `Model` type to import. A model is any
+# type for which these calls compile (checked when checkLinearizable is
+# instantiated):
+#   step(M, S, Op): Expected[S, Res]               pure func, {.raises: [].}
+#   (or outcomes(M, S, Op): seq[Expected[S, Res]], M14)
+#   hash(S): Hash; `==`(S, S): bool; `==`(Res, Res): bool
 ```
 
-`Expected` is implemented (M2). The `Model` concept is not yet: today the contract is enforced only by the calls `checkLinearizable` makes.
+There is no `Model` concept: the contract is enforced by the calls `checkLinearizable` makes, at compile time. A missing `hash`/`==` or a `step` that can raise is a compilation error at the call site (`tests/tcompile_raises.nim` locks the second one in).
 
 Instead of `step`, a model may define `outcomes` (M14), for nondeterministic specifications:
 
@@ -182,9 +183,10 @@ template record*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op, body:
 proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [ArgumentError].}
 ```
 
-- `threads`: number of threads that will record. `thread` in `begin` is an index in `0 ..< threads` (it becomes the event's `ThreadId`). Each index must be used by **one** thread only.
+- `threads`: number of logical threads that will record. `thread` in `begin` is an index in `0 ..< threads` (it becomes the event's `ThreadId`). Each index must be used by one sequential caller at a time.
 - `begin` takes the `invoke` `seq` **before** returning; call it before the real operation. `finish` takes the `return` `seq`; call it afterwards. See [event order](HISTORY.md#event-order).
-- `begin`/`finish` do not raise, to keep the hot path light. Errors (index out of range, `finish` twice, `finish` without `begin`, `finish` from a thread that did not call `begin` for that operation) show up as `ArgumentError` in `snapshot`. A `finish` from the wrong thread is refused without writing, since writing would race with the owning thread.
+- `begin`/`finish` do not raise, to keep the hot path light. Errors (index out of range, `finish` twice, `finish` without `begin`) show up as `ArgumentError` in `snapshot`.
+- An index is a **logical** thread: `finish` may run on another OS thread than `begin` (an async task that resumed elsewhere). What is not allowed is two calls on the same index at the same time; each buffer has an atomic busy flag, and the second caller records misuse instead of writing (so it cannot corrupt the buffer).
 - `record` = `begin`, then `body` (must give a `Res`), then `finish` with that result, which it returns. If `body` raises, `finish` is not called and the operation stays pending. See [History](HISTORY.md#concurrent-recording-recorder).
 - `tick` records an instantaneous event with one `seq`. Call it right **after** advancing the fake clock, from the thread that advanced it. A bad `thread` index shows up as `ArgumentError` in `snapshot`, like the other misuses.
 - `snapshot` may only be called after every thread has finished (`joinThreads`). It does not clear the buffers; for the next round, create another recorder.

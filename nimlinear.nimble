@@ -10,17 +10,16 @@ srcDir        = "src"
 
 requires "nim >= 2.2.0"
 
-import std/os, std/strutils
+# Tasks: the same runner as CI (tools/run.nims). Extra compiler flags go in
+# the NIMFLAGS environment variable.
 
-# Tasks
+task test, "Runs every tests/t*.nim (same runner as CI)":
+  exec "nim e tools/run.nims"
 
-task test, "Runs every tests/t*.nim (same loop as CI)":
-  var files: seq[string]
-  for f in listFiles("tests"):
-    let name = f.extractFilename
-    if name.startsWith("t") and name.endsWith(".nim"):
-      files.add f
-  if files.len == 0:
-    quit "no test files found in tests/", 1
-  for f in files:
-    exec "nim c -r --hints:off " & f
+task examples, "Compiles and runs every examples/*.nim":
+  putEnv("NIMLINEAR_RUN", "examples")
+  exec "nim e tools/run.nims"
+
+task bench, "Runs the benchmark suite with --check":
+  putEnv("NIMLINEAR_RUN", "bench")
+  exec "nim e tools/run.nims"

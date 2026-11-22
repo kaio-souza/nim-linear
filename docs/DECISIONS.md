@@ -2,7 +2,7 @@
 
 Each decision has context, choice, reason and consequence. Accepted decisions do not change without a new entry here. Once the project has more code, each decision may become an ADR in `docs/decisions/NNNN-title.md` (directory to be created).
 
-Status: **Proposed** (not implemented yet) or **Accepted**.
+Status: **Proposed** (not implemented) or **Accepted**.
 
 ---
 
@@ -24,7 +24,7 @@ Status: **Proposed** (not implemented yet) or **Accepted**.
 
 ## D-03: event order from an atomic counter
 
-- **Status:** Proposed
+- **Status:** Accepted (implemented in M7)
 - **Context:** clock timestamps can tie or be noisy across threads.
 - **Choice:** each `invoke` and `return` gets its `seq` from a shared `Atomic[int]` (`fetchAdd`); the type `SeqNo` is a `distinct int` (D-19). The `invoke` takes its `seq` before the call; the `return` takes it after.
 - **Reason:** the counter gives a total order without depending on the clock. Taking the `seq` outside the call preserves real-time order.
@@ -48,7 +48,7 @@ Status: **Proposed** (not implemented yet) or **Accepted**.
 
 ## D-06: `vkInconclusive` is never success nor failure
 
-- **Status:** Proposed
+- **Status:** Accepted (implemented in M4; `runRounds` treats it as a failure of the test)
 - **Context:** the search has a budget. When it runs out, the checker does not know the answer.
 - **Choice:** a verdict of its own, with the number of explored states and the budget.
 - **Reason:** treating it as success hides bugs; treating it as failure raises false alarms. The library does not decide; the [usage guide](GUIDE.md#step-3-small-rounds) recommends failing in regression tests, to force the history to be shrunk.
@@ -72,7 +72,7 @@ Status: **Proposed** (not implemented yet) or **Accepted**.
 
 ## D-09: time fixed for the round as the default path
 
-- **Status:** Proposed
+- **Status:** Accepted (guidance; `tick` in M10 is the alternative)
 - **Context:** objects with timeouts or TTLs depend on the clock. The checker does not see a clock advance that is not in the history.
 - **Choice:** the recommended path is to advance a fake clock before the round's threads and keep it fixed during the round; the effect of time becomes a field of the model's initial state. Time as an event (`tick`) is the alternative, implemented in M10 (D-22).
 - **Reason:** it is the simplest path that covers most races in time-dependent objects.

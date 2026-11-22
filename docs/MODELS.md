@@ -29,7 +29,7 @@ The initial state is not part of the model: it is passed to `checkLinearizable(h
 | `step` is total (answers for every state/operation combination) | an invalid operation must become an error result, not an exception |
 | no wall-clock time inside `step` | see [Time](#time) |
 
-The planned `Model` concept (see [API](API.md#model)) is meant to check the contract at compile time; today only the `{.raises: [].}` part is enforced.
+There is no `Model` concept type: the contract is checked at compile time by the calls the checker makes (see [API](API.md#model)). A missing `hash` or `==`, or a `step` that can raise, does not compile.
 
 ### Nondeterministic specifications: `outcomes` (M14)
 
