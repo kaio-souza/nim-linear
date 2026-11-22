@@ -6,3 +6,5 @@ examples/*
 !examples/*.*
 !examples/*/
 *.exe
+tests/*/*
+!tests/*/*.*

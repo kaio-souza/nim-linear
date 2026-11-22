@@ -2,17 +2,19 @@
 
 > **Status: in development, not released.** Most of this documentation describes what the library **is meant** to do, not what it already does. The API is a draft and may change until the first release.
 >
-> **What exists today** (M0–M7, confirmed by the CI matrix: Linux, macOS, Windows × Nim 2.2.4, 2.4.0):
+> **What exists today** (M0–M8 and M10–M13, confirmed by the CI matrix: Linux, macOS, Windows × Nim 2.2.4, 2.4.0):
 > - history types, `newHistory` and JSON Lines (M1);
 > - `checkLinearizable` with the `Register` model (M2);
 > - pending operations and the `EventFlag` model, with a lost-wakeup fixture that the checker rejects (M3);
-> - a search budget that returns `vkInconclusive`, plus optional `-d:nimlinearMeasure` sampling and preliminary measurements in [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) (M4);
+> - a search budget that returns `vkInconclusive`, plus optional `-d:nimlinearMeasure` sampling and measurements in [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) (M4);
 > - stable `report` text and golden snapshots for verdicts (M5);
-> - a brute-force oracle test comparing 10,000 random histories per model (`Register` and `BoundedQueue`) against the checker (M6);
-> - a concurrent `Recorder` with `--threads:on`: per-thread buffers, no locks while recording, merged in `snapshot` (M7);
-> - the `BoundedQueue` example model used by tests (part of M8 groundwork).
+> - a brute-force oracle test comparing 10,000 random histories per model against the checker (M6);
+> - a concurrent `Recorder` with `--threads:on`: per-thread buffers, no locks while recording, merged in `snapshot`, plus the `record` template (M7);
+> - the end-to-end example [`examples/queue_race.nim`](examples/queue_race.nim) with the `BoundedQueue` model (M8);
+> - time as an event (`tick`, M10), `checkPartitioned` (M11), perturbation points (`nimlinear/perturb`, M12) and the PCT scheduler (`nimlinear/schedule`, M13), each with its example or tests;
+> - the `CircuitBreaker` model, with the cool-down as `tick`.
 >
-> **On `master`, not yet confirmed by CI:** the end-to-end example [`examples/queue_race.nim`](examples/queue_race.nim) (M8), time as an event (`tick`, M10), `checkPartitioned` (M11), perturbation points (`nimlinear/perturb`, M12, [`examples/queue_perturb.nim`](examples/queue_perturb.nim)) and the PCT scheduler (`nimlinear/schedule`, M13, [`examples/queue_pct.nim`](examples/queue_pct.nim)). Locally (Linux, Nim 2.2.4, 1/2/8 CPUs, debug/release, orc/arc): the M8 bug is rejected in the first round; with a narrow window, perturbation finds it in 1 round per seed versus tens to 200+ without; the PCT scheduler reproduces histories byte for byte and finds the bug within its budget of 50 seeds (at seed 2). Also on `master`: the `CircuitBreaker` model (with cool-down as `tick`, agreeing with the brute-force oracle on 10,000 random histories) and the `Recorder.record` template. Both pass the full test suite locally (Linux, Nim 2.2.4, orc/arc, threads on/off), including agreement with the brute-force oracle on 10,000 random histories with ticks.
+> **Known gaps** (review of 2026-11-22, details in [`docs/COMPARISON.md`](docs/COMPARISON.md)): no nondeterministic specifications, no minimization of failing histories, no visualization, and the checker is quadratic on long histories (see [benchmarks](docs/MEASUREMENTS.md#benchmarks)).
 >
 > **Does not exist yet:** a release on the nimble index (M9). A milestone is checked in the [Roadmap](#roadmap) only after CI confirms it.
 
@@ -133,15 +135,29 @@ Items in order. Each one has an acceptance criterion. A milestone (M0, M1…) is
 - [x] **M5. Diagnostics** (D-14): `Witness` with alternatives and a stable `report`. Acceptance: snapshots in `tests/golden/` identical on Linux, macOS and Windows.
 - [x] **M6. Brute-force oracle** for up to ~8 operations, with a fixed seed (generator described in [CONTRIBUTING](CONTRIBUTING.md#brute-force-oracle-m6)). Acceptance: agrees with the checker on 10 thousand random histories.
 - [x] **M7. Concurrent recorder** with `Atomic[int]` and a final merge. Acceptance: N threads record; each operation has one `invoke` and one `return`; unique `seq`.
-- [ ] **M8. End-to-end example** in `examples/`: a real concurrent queue with an injectable bug, and a test that fails with the bug and passes without it. Acceptance: runs in CI.
+- [x] **M8. End-to-end example** in `examples/`: a real concurrent queue with an injectable bug, and a test that fails with the bug and passes without it. Acceptance: runs in CI.
 - [ ] **M9. Release** on the nimble index.
 
 **Optional** (they go into later releases, following the policy below)
 
-- [ ] **M10. Time as an event** (`tick`, see [History](docs/HISTORY.md#time)).
-- [ ] **M11. `checkPartitioned`** (D-12), for P-compositional models (maps by key).
-- [ ] **M12. Perturbation** (D-18): module `nimlinear/perturb` with a fixed-seed `perturb()`, empty without `-d:nimlinearPerturb`. Acceptance: in the M8 example, the injected bug fails in fewer rounds with perturbation than without; the core compiles and passes its tests without importing the module.
-- [ ] **M13. PCT scheduler** (D-18), optional: module `nimlinear/schedule`. Acceptance: the same seed produces the same history, byte for byte, across repeated runs; the M8 bug is found within a documented round budget (50 seeds, one round each).
+- [x] **M10. Time as an event** (`tick`, see [History](docs/HISTORY.md#time)).
+- [x] **M11. `checkPartitioned`** (D-12), for P-compositional models (maps by key).
+- [x] **M12. Perturbation** (D-18): module `nimlinear/perturb` with a fixed-seed `perturb()`, empty without `-d:nimlinearPerturb`. Acceptance: in the M8 example, the injected bug fails in fewer rounds with perturbation than without; the core compiles and passes its tests without importing the module.
+- [x] **M13. PCT scheduler** (D-18), optional: module `nimlinear/schedule`. Acceptance: the same seed produces the same history, byte for byte, across repeated runs; the M8 bug is found within a documented round budget (50 seeds, one round each).
+
+**Refinement** (gaps from the review of 2026-11-22, compared with Porcupine, Knossos and Lincheck; reasons in [Comparison](docs/COMPARISON.md)). M14 and M15 change the API or the saved format, so they should land before M9.
+
+- [ ] **M14. Nondeterministic specifications**: a model contract that receives the observed result (`accepts(state, op, res): Option[S]`), next to `step`. Acceptance: a bag model whose `take` may return any item, and a weak CAS that may fail spuriously, both checked against the oracle on 10,000 random histories.
+- [ ] **M15. Format version** in JSON Lines (optional first line). Acceptance: files without the line still parse; a file with an unknown version is rejected with a clear `ValueError`.
+- [ ] **M16. Minimization** (`shrink`). Acceptance: on the M8 failure, the shrunk history is still rejected, is no larger than the original, and the same input always gives the same output.
+- [ ] **M17. Round harness** (`runRounds`). Acceptance: `examples/queue_race.nim` rewritten with it, in fewer lines, with the same behavior.
+- [ ] **M18. Timeline in the report** (ASCII, golden-tested) and an optional standalone HTML file.
+- [ ] **M19. `SchedLock`** for `nimlinear/schedule`. Acceptance: a bug inside a critical section is found under the scheduler without hanging.
+- [ ] **M20. Wall-clock timeout** next to `budget`, giving `vkInconclusive`.
+- [ ] **M21. Generic partition key** (any type with `hash`, `==`, `<`).
+- [ ] **M22. Linear-time search on long histories.** Acceptance: shape C of the [benchmarks](docs/MEASUREMENTS.md#benchmarks) grows linearly (20 000 ops in at most about 2.5 × the time of 10 000), with every existing test still passing.
+- [ ] **M23. Benchmark suite**: shapes A–C plus partitioned and pending cases, exported for Porcupine, with a side-by-side table and a CI job that catches large regressions.
+- [ ] **M24. Small items**: `History` construction only through `newHistory`, async usage documented, macOS Nim pinned in CI.
 
 ## Release policy
 

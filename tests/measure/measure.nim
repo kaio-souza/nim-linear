@@ -1,6 +1,6 @@
 ## M4 memory measurement (CONTRIBUTING.md#memory-measurement-m4).
 ## nim c -r -d:release --mm:orc -d:nimlinearMeasure tests/measure/measure.nim
-## Worst case for the search: Register histories with `threads` threads and
+## Easy shape (not a worst case, see docs/MEASUREMENTS.md#benchmarks): Register histories with `threads` threads and
 ## `opsPerThread` ops each, all invoked before any returns (one big overlap),
 ## writes of distinct values plus reads of values that some order could explain,
 ## and a final read of a value never written, so the history is not
