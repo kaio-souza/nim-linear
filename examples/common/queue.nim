@@ -73,11 +73,9 @@ proc worker(c: Ctx) {.thread.} =
   for i in 0 ..< opsPerThread:
     if i mod 2 == 0:
       let v = c.tid * 100 + i        # unique values: a duplicate is visible
-      let id = c.rec[].begin(c.tid, enqueue(v))
-      c.rec[].finish(id, c.q[].enqueue(v))
+      discard c.rec[].record(c.tid, enqueue(v)): c.q[].enqueue(v)
     else:
-      let id = c.rec[].begin(c.tid, dequeue())
-      c.rec[].finish(id, c.q[].dequeue())
+      discard c.rec[].record(c.tid, dequeue()): c.q[].dequeue()
   if c.hooks.leave != nil: c.hooks.leave()
 
 proc runRound*(buggy: bool, window = wSleep, hooks = Hooks()): History[QueueOp, QueueRes] =

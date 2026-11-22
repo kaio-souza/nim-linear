@@ -69,6 +69,21 @@ proc tick*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.rai
                                           seqNo: SeqNo(s), kind: ekTick, call: call)
   id
 
+template record*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op,
+                          body: untyped): Res =
+  ## `begin`, evaluates `body` (the real operation, which must give a `Res`),
+  ## `finish` with that result, and returns it:
+  ##
+  ##   let got = rec.record(myId, dequeue()):
+  ##     toRes(queue.tryDequeue())
+  ##
+  ## If `body` raises, `finish` is not called and the operation stays pending.
+  let recPtr = addr(r)
+  let recId = recPtr[].begin(thread, call)
+  let recRes: Res = body
+  recPtr[].finish(recId, recRes)
+  recRes
+
 proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [ArgumentError].} =
   ## Merges all thread buffers by `seq`. Call only after all threads joined.
   if r.misuse.load:

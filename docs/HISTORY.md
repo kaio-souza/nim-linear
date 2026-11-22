@@ -59,12 +59,14 @@ let v = checkLinearizable(h, QueueState(capacity: 4), QueueModel, budget = 500_0
 
 Full signatures and rules in [API](API.md#recorder). `snapshot` goes through `newHistory`, so recorder misuse (for example, `finish` twice on the same id) shows up as `ArgumentError`.
 
-A `record` template (planned) to cut test boilerplate:
+The `record` template cuts the boilerplate: it calls `begin`, evaluates the body (the real operation, which must produce a `Res`), calls `finish` with that result and returns it:
 
 ```nim
 let got = rec.record(myId, QueueOp(kind: qDequeue)):
-  queue.tryDequeue()             # the result becomes the `return`
+  toQueueRes(queue.tryDequeue())   # the result becomes the `return`
 ```
+
+If the body raises, `finish` is not called and the operation stays pending.
 
 ## Pending operations
 

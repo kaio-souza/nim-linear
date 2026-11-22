@@ -74,3 +74,28 @@ else:
       let h = rec.snapshot()
       for e in h.events:
         check int(e.thread) == (int(e.op) - 1) mod 2
+
+    test "record: begin, body, finish, and returns the result":
+      var rec = newRecorder[RegOp, RegRes](threads = 1)
+      var calls = 0
+      let got = rec.record(0, write(3)):
+        inc calls
+        RegRes(ok: true)
+      check got == RegRes(ok: true)
+      check calls == 1
+      let r = rec.record(0, read()): RegRes(value: 3, ok: true)
+      check r.value == 3
+      let h = rec.snapshot()
+      check h.events.len == 4
+      check h.events[0].kind == ekInvoke and h.events[1].kind == ekReturn
+      check h.events[0].call == write(3)
+      check h.events[3].res == RegRes(value: 3, ok: true)
+
+    test "record: an exception in the body leaves the op pending":
+      var rec = newRecorder[RegOp, RegRes](threads = 1)
+      proc boom(): RegRes = raise newException(IOError, "boom")
+      expect IOError:
+        discard rec.record(0, read()): boom()
+      let h = rec.snapshot()
+      check h.events.len == 1
+      check h.events[0].kind == ekInvoke

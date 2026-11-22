@@ -54,7 +54,7 @@ Objects whose result depends on the clock (timeouts, TTL, limiters) cannot read 
 
 ## Example models
 
-The models below ship with the library. They serve to test the checker and as a starting point. Implemented today: `Register`, `EventFlag` and `BoundedQueue` (`nimlinear/models/*`). `CircuitBreaker` is planned.
+The models below ship with the library. They serve to test the checker and as a starting point. All four are implemented, in `nimlinear/models/*` (`register`, `eventflag`, `boundedqueue`, `circuitbreaker`).
 
 | Model | State | Operations | Use |
 |---|---|---|---|
@@ -228,10 +228,10 @@ An example of the pattern above. Minimal policy: opens after `threshold` consecu
 type
   Phase = enum pClosed, pOpen, pHalfOpen
   PermitKind = enum pkNormal, pkProbe
-  BreakerOpKind = enum bAcquire, bReport
+  BreakerOpKind = enum bAcquire, bReport, bTick
   BreakerOp = object
     case kind: BreakerOpKind
-    of bAcquire: discard
+    of bAcquire, bTick: discard
     of bReport:
       permit: PermitKind      # kind received in the matching acquire
       ok: bool
@@ -262,7 +262,10 @@ type
 #   others   -> brAck, no change
 # report(pkProbe, ok):      phase = pClosed, failures = 0, probeOut = false, brAck
 # report(pkProbe, failure): phase = pOpen, probeOut = false, cooledDown = false, brAck
+# tick (an ekTick event, M10): cooledDown = true, brAck
 ```
+
+Two ways to handle the cool-down: fix the clock for the round and set `cooledDown` in the initial state, or record a `tick()` when the cool-down elapses during the round (see [Time](#time)). In the shipped model, one `tick` means "the cool-down elapsed"; if your breaker counts several clock steps, add a counter to the state.
 
 Left out of the model (write this down in your test's documentation): sliding windows, failure rate as a percentage, more than one probe call, limits per error type. Configure the real breaker so that these policies do not affect the results, or extend the state.
 
@@ -270,7 +273,7 @@ Decisions that belong to **your policy**, not to the library. Adjust `step` if y
 
 - what to do with a `report(pkNormal)` that arrives after the breaker opened (here: ignored);
 - whether the open→half-open transition happens in `acquire` (here) or in a timer;
-- whether `cooledDown` can become true again during the round: with a fixed clock, it cannot. To test the cool-down expiring during the round, use `tick` (M10).
+- whether `cooledDown` can become true again during the round: with a fixed clock, it cannot; with `tick` (M10), each tick sets it.
 
 Bugs this model rejects: two `pkProbe` permits granted with no `report` between them; opening with more or fewer failures than `threshold`; a late `report(pkNormal)` closing a breaker that had already opened.
 
