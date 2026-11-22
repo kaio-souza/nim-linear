@@ -31,7 +31,7 @@ else:
     if not op.inc: return CRes(value: c.v.load)
     if c.racy:
       let x = c.v.load
-      sleep(0)
+      sleep(1)       # a real window: thread start-up can outlast sleep(0) (Windows)
       c.v.store(x + 1)
       CRes(value: x + 1)
     else:
@@ -50,15 +50,17 @@ else:
 
     test "racy object fails, is shrunk and saved":
       racy = true
-      let r = runRounds(RoundsConfig(rounds: 200, saveDir: dir, name: "racy"), CState(), CModel,
-                        setupCounter, genOp, exec)
+      let r = runRounds(RoundsConfig(rounds: 200, opsPerThread: 12, saveDir: dir, name: "racy"),
+                        CState(), CModel, setupCounter, genOp, exec)
       check not r.passed
-      check r.verdict.kind == vkNotLinearizable
-      check r.history.events.len <= r.original.events.len
-      check fileExists(r.savedTo)
-      let back = parseJsonLines[COp, CRes](readFile(r.savedTo))
-      check checkLinearizable(back, CState(), CModel).kind == vkNotLinearizable
-      check "failed in round" in r.describe
+      if not r.passed:
+        check r.verdict.kind == vkNotLinearizable
+        check r.history.events.len <= r.original.events.len
+        check fileExists(r.savedTo)
+        if fileExists(r.savedTo):
+          let back = parseJsonLines[COp, CRes](readFile(r.savedTo))
+          check checkLinearizable(back, CState(), CModel).kind == vkNotLinearizable
+        check "failed in round" in r.describe
 
     test "same seed, same operations":
       var cfg = RoundsConfig(threads: 2, opsPerThread: 3, seed: 9)
