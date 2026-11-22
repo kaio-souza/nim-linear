@@ -115,6 +115,8 @@ If the object depends on a clock, inject a fake clock and follow [Time](MODELS.m
 
 Inject a known bug on purpose (for example, remove the capacity check, or replace an atomic operation with a separate read and write) and confirm the test fails. If it does not, the test is worthless: increase the rounds, change the initial state or review the model.
 
+A complete example of this step is [`examples/queue_race.nim`](../examples/queue_race.nim): it runs the same test against a correct queue and against one with a check-then-act bug in `dequeue`, and fails unless the first passes and the second is rejected.
+
 ## Step 5b (optional): perturbation
 
 If the bug you care about has a narrow window (between reading and changing shared state), put `perturb()` at those points in the object under test and compile the test with `-d:nimlinearPerturb` (M12, D-18). Without the flag, `perturb()` generates no code. Confirm step 5 again: the injected bug should fail in fewer rounds.

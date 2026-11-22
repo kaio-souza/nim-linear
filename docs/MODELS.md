@@ -54,13 +54,13 @@ Objects whose result depends on the clock (timeouts, TTL, limiters) cannot read 
 
 ## Example models
 
-The models below ship with the library. They serve to test the checker and as a starting point. Implemented today: `Register` (`nimlinear/models/register`) and `EventFlag` (`nimlinear/models/eventflag`). The others are planned.
+The models below ship with the library. They serve to test the checker and as a starting point. Implemented today: `Register`, `EventFlag` and `BoundedQueue` (`nimlinear/models/*`). `CircuitBreaker` is planned.
 
 | Model | State | Operations | Use |
 |---|---|---|---|
 | [`Register`](#register) | `value: int` | `read`, `write`, `cas` | simplest fixture; basis for M2 |
 | [`EventFlag`](#eventflag-and-lost-wakeup) | `signaled: bool` | `signal`, `wait` (with timeout) | lost wakeup (M3) |
-| [`BoundedQueue`](#boundedqueue) | `items: seq[int]`, `capacity`, `closed` | `enqueue`, `dequeue`, `close` | queue/channel; end-to-end example (M8) |
+| [`BoundedQueue`](#boundedqueue) | `items: seq[int]`, `capacity`, `closed` | `enqueue`, `dequeue`, `close` | queue/channel; end-to-end example in [`examples/queue_race.nim`](../examples/queue_race.nim) (M8) |
 | [`CircuitBreaker`](#circuitbreaker) | `phase`, `failures`, `probeOut`, `cooledDown`, `threshold` | `acquire`, `report` | example of the [state machine with permits](#state-machines-with-permits) pattern |
 
 None of these models gets special treatment from the checker. They use the same contract as any model of yours; the library does not know what a queue or a breaker is.

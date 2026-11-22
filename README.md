@@ -12,9 +12,9 @@
 > - a concurrent `Recorder` with `--threads:on`: per-thread buffers, no locks while recording, merged in `snapshot` (M7);
 > - the `BoundedQueue` example model used by tests (part of M8 groundwork).
 >
-> **On `master`, not yet confirmed by CI:** time as an event (`tick`, M10) and `checkPartitioned` (M11). Both pass the full test suite locally (Linux, Nim 2.2.4, orc/arc, threads on/off), including agreement with the brute-force oracle on 10,000 random histories with ticks.
+> **On `master`, not yet confirmed by CI:** the end-to-end example [`examples/queue_race.nim`](examples/queue_race.nim) (M8), time as an event (`tick`, M10) and `checkPartitioned` (M11). The example passes locally with 1, 2 and 8 CPUs (correct queue linearizable in 300 rounds; injected bug rejected in the first round). Both pass the full test suite locally (Linux, Nim 2.2.4, orc/arc, threads on/off), including agreement with the brute-force oracle on 10,000 random histories with ticks.
 >
-> **Does not exist yet:** the end-to-end example (M8), the `CircuitBreaker` model, and a release on the nimble index (M9). A milestone is checked in the [Roadmap](#roadmap) only after CI confirms it.
+> **Does not exist yet:** the `CircuitBreaker` model, and a release on the nimble index (M9). A milestone is checked in the [Roadmap](#roadmap) only after CI confirms it.
 
 A Nim library, **stdlib only**, that checks whether a history of concurrent operations is **linearizable**: is there a valid sequential order of the operations that explains exactly the observed results?
 
@@ -82,7 +82,7 @@ Use it for objects whose operations should look **atomic**: each call has a poin
 
 ## Usage example (draft)
 
-> Draft: `checkLinearizable`, `report`, `Recorder` (with `--threads:on`) and the `Register` model exist, but this snippet is abbreviated (the `...` stands for the thread code) and is not compiled by any test. A runnable end-to-end example is M8.
+> Draft: `checkLinearizable`, `report`, `Recorder` (with `--threads:on`) and the `Register` model exist, but this snippet is abbreviated (the `...` stands for the thread code) and is not compiled by any test. For a runnable version, see [`examples/queue_race.nim`](examples/queue_race.nim) (M8).
 
 A shared register with `read`, `write` and `cas`. Full model in [Models](docs/MODELS.md#register).
 
