@@ -144,10 +144,11 @@ if verdict.kind != vkLinearizable:
 `runRounds` (M17) does this for you, after shrinking the history. Then replay it without rerunning the test:
 
 ```nim
-let h = parseJsonLines[QueueOp, QueueRes](readFile("tests/fixtures/failure-42.jsonl"))
+# any .jsonl history: a file saved by runRounds, or one you wrote yourself
+let h = parseJsonLines[QueueOp, QueueRes](readFile("tests/fixtures/my-failure.jsonl"))
 let v = checkLinearizable(h, QueueState(capacity: 4), QueueModel)
 echo report(v, h)                     # verdict plus timeline (M18)
-writeFile("failure-42.html", timelineHtml(h, v))
+writeFile("failure.html", timelineHtml(h, v))
 ```
 
 To make it smaller first: `let small = shrink(h, QueueState(capacity: 4), QueueModel)` (M16).

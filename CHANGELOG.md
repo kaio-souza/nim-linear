@@ -1,10 +1,12 @@
 # Changelog
 
-Each release lists what changed for users. Changes to the public API or to the saved JSON format are marked **breaking**. Work in progress accumulates under `## Unreleased`; see [Release policy](README.md#release-policy). Milestone numbers (M0…M24) refer to the [Roadmap](README.md#roadmap).
+Each release lists what changed for users. Changes to the public API or to the saved JSON format are marked **breaking**. Work in progress accumulates under `## Unreleased`; see the [Release policy](CONTRIBUTING.md#releasing). Milestone numbers (M0…M24) refer to the [Roadmap](CONTRIBUTING.md#roadmap).
 
 ## Unreleased
 
-Nothing has been released yet. The first release will contain everything below. Intermediate API changes made before it are not listed as breaking, since no version had them.
+## 0.1.0
+
+First release. Everything below is new in 0.1.0; no earlier version was published, so no change is marked breaking.
 
 ### History and format
 

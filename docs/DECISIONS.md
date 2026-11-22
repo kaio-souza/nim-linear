@@ -51,7 +51,7 @@ Status: **Proposed** (not implemented) or **Accepted**.
 - **Status:** Accepted (implemented in M4; `runRounds` treats it as a failure of the test)
 - **Context:** the search has a budget. When it runs out, the checker does not know the answer.
 - **Choice:** a verdict of its own, with the number of explored states and the budget.
-- **Reason:** treating it as success hides bugs; treating it as failure raises false alarms. The library does not decide; the [usage guide](GUIDE.md#step-3-small-rounds) recommends failing in regression tests, to force the history to be shrunk.
+- **Reason:** treating it as success hides bugs; treating it as failure raises false alarms. The library does not decide; the [usage guide](GUIDE.md#step-3-small-rounds-with-runrounds) recommends failing in regression tests, to force the history to be shrunk.
 - **Consequence:** raising the budget without measuring is discouraged in regression tests (see [API](API.md#budget)).
 
 ## D-07: exhaustive exploration out of scope
@@ -172,7 +172,7 @@ Status: **Proposed** (not implemented) or **Accepted**.
 
 - **Status:** Accepted
 - **Context:** development uses AI agents, and small milestones are ready in hours. Organizing deliveries by version (one milestone per version) would lead to several releases on the same day.
-- **Choice:** milestones are units of work on `master`. Releases bundle useful sets of changes, after 7 days without API or format changes, with at least 7 days between them. The exception is a fix for a wrong verdict. Rules in the [README](../README.md#release-policy).
+- **Choice:** milestones are units of work on `master`. Releases bundle useful sets of changes, after 7 days without API or format changes, with at least 7 days between them. The exception is a fix for a wrong verdict. Rules in [CONTRIBUTING](../CONTRIBUTING.md#releasing).
 - **Reason:** users should not have to follow versions that change nothing for them. The stabilization period balances the speed of writing with time in real use.
 - **Consequence:** the roadmap does not reserve version numbers. `CHANGELOG.md` accumulates `## Unreleased` until the next release.
 

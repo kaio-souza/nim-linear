@@ -1,6 +1,6 @@
 # API
 
-> Not released yet: names and signatures may change until the first release. Every change to this page is listed in `CHANGELOG.md` under `## Unreleased` (see [Release policy](../README.md#release-policy)).
+> This page describes the API of version 0.1.0. Every later change to it is listed in `CHANGELOG.md`, marked **breaking** when names or signatures change.
 
 ## Overview
 
@@ -190,7 +190,7 @@ proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [A
 - `record` = `begin`, then `body` (must give a `Res`), then `finish` with that result, which it returns. If `body` raises, `finish` is not called and the operation stays pending. See [History](HISTORY.md#concurrent-recording-recorder).
 - `tick` records an instantaneous event with one `seq`. Call it right **after** advancing the fake clock, from the thread that advanced it. A bad `thread` index shows up as `ArgumentError` in `snapshot`, like the other misuses.
 - `snapshot` may only be called after every thread has finished (`joinThreads`). It does not clear the buffers; for the next round, create another recorder.
-- Threads receive a `ptr Recorder` (`addr rec`); the recorder must outlive them. Full example in the [Guide](GUIDE.md#step-3-small-rounds).
+- Threads receive a `ptr Recorder` (`addr rec`); the recorder must outlive them. Full example in the [Guide](GUIDE.md#step-3-small-rounds-with-runrounds).
 
 ### `checkLinearizable`
 

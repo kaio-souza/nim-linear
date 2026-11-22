@@ -29,7 +29,7 @@ Review of 2026-11-22, after M0–M13; status updated after M14–M24 the same da
 
 ## Gaps
 
-Each gap has a milestone in the [Roadmap](../README.md#roadmap). All eleven were addressed in M14–M24; the **Status** line under each says what was done and what remains.
+Each gap has a milestone in the [Roadmap](../CONTRIBUTING.md#roadmap). All eleven were addressed in M14–M24; the **Status** line under each says what was done and what remains.
 
 1. **Nondeterministic specifications (M14).** `step(state, op)` returns one expected result and the checker compares it with the observed one. Porcupine and Knossos give the model the observed result and ask whether it is acceptable. What cannot be modeled today: a bag or pool whose `take` may return any item; operations allowed to fail spuriously (weak CAS, `tryLock`, a `wait` that may time out early); results that decide the next state (`alloc()` returning an id). Direction: an alternative contract `accepts(state, op, res): Option[S]` next to `step`, keeping `step` for the deterministic case and for the explanation in `Alternative.expected`.
    **Status:** done with `outcomes` instead (D-23), which also covers pending operations. Remains: choices from infinite sets.

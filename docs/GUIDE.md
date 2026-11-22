@@ -15,13 +15,13 @@ This test does not replace the stress and invariant tests you may already have: 
 
 ## Step 1: test dependency
 
-In your project's `.nimble`, as a test-only dependency. nimlinear is not on the nimble index yet (M9), so until then use the repository URL:
+In your project's `.nimble`, as a test-only dependency. nimlinear is not on the nimble index yet, so use the repository URL:
 
 ```nim
 taskRequires "test", "https://github.com/kaio-souza/nim-linear"
 ```
 
-After the first release: `taskRequires "test", "nimlinear >= 0.1.0"`.
+Once it is on the nimble index: `taskRequires "test", "nimlinear >= 0.1.0"`.
 
 Acceptance: `nimble test` resolves the dependency; the published package (`requires`) gains nothing new.
 
@@ -51,18 +51,19 @@ You write four procedures: `setup` (fresh object per round, in a known state), `
 
 ```nim
 # compile with --threads:on
-import std/[random, unittest]
+import std/[options, random, unittest]
 import nimlinear
 import nimlinear/models/boundedqueue
-import myqueue        # your real queue: tryEnqueue(v): bool; tryDequeue(): Option[int]
+import myqueue        # your real queue: MyQueue, initMyQueue(capacity),
+                      # tryEnqueue(v): bool, tryDequeue(): Option[int]
 
-proc setup(q: var BoundedQueue[int]) = q = newBoundedQueue[int](capacity = 4)
+proc setup(q: var MyQueue) = q = initMyQueue(4)   # fresh queue, same capacity as the model
 
 proc genOp(rng: var Rand, thread, index: int): QueueOp =
   if rng.rand(1) == 0: enqueue(thread * 1000 + index)   # distinct values
-  else: dequeue()
+  else: dequeue()                                        # genOp never produces close()
 
-proc exec(q: ptr BoundedQueue[int], op: QueueOp): QueueRes {.gcsafe.} =
+proc exec(q: ptr MyQueue, op: QueueOp): QueueRes {.gcsafe.} =
   case op.kind
   of qEnqueue: (if q[].tryEnqueue(op.value): okRes() else: fullRes())
   of qDequeue:

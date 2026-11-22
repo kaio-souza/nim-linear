@@ -10,4 +10,4 @@ when compileOption("threads"):
   import nimlinear/[recorder, rounds]
   export recorder, rounds
 
-const nimlinearVersion* = "0.0.0"
+const nimlinearVersion* = "0.1.0"
