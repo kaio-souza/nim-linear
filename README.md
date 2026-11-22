@@ -2,7 +2,7 @@
 
 > **Status: in development, not released.** Most of this documentation describes what the library **is meant** to do, not what it already does. The API is a draft and may change until the first release.
 >
-> **What exists today** (tested locally only, Linux, Nim 2.2.4; CI has not run yet):
+> **What exists today** (M0–M7, confirmed by the CI matrix: Linux, macOS, Windows × Nim 2.2.4, 2.4.0):
 > - history types, `newHistory` and JSON Lines (M1);
 > - `checkLinearizable` with the `Register` model (M2);
 > - pending operations and the `EventFlag` model, with a lost-wakeup fixture that the checker rejects (M3);
@@ -12,7 +12,7 @@
 > - a concurrent `Recorder` with `--threads:on`: per-thread buffers, no locks while recording, merged in `snapshot` (M7);
 > - the `BoundedQueue` example model used by tests (part of M8 groundwork).
 >
-> **Does not exist yet:** the end-to-end example, the `CircuitBreaker` model, and full M4 memory-measurement acceptance in CI. No milestone is checked in the [Roadmap](#roadmap) until CI confirms it.
+> **Does not exist yet:** the end-to-end example (M8), the `CircuitBreaker` model, and a release on the nimble index (M9). A milestone is checked in the [Roadmap](#roadmap) only after CI confirms it.
 
 A Nim library, **stdlib only**, that checks whether a history of concurrent operations is **linearizable**: is there a valid sequential order of the operations that explains exactly the observed results?
 
@@ -103,7 +103,7 @@ Details in [API](docs/API.md), [Models](docs/MODELS.md) and the [Usage guide](do
 
 ## Guarantees
 
-These are design goals. Today they apply only to the code that already exists (history, JSON, checker, report and recorder) and have been verified only by local tests.
+These are design goals. Today they apply only to the code that already exists (history, JSON, checker, report and recorder) and have been verified by the tests in the CI matrix.
 
 - **No external dependencies.** Only `std/*`: `atomics`, `locks`, `json`, `hashes`, `sets`, `tables`, `random`, `unittest` (and `monotimes`, for diagnostics only).
 - **The core does not raise.** `checkLinearizable` is `{.raises: [].}`; the contract requires the model's `step` to be as well. Usage errors (invalid history) show up earlier, in `newHistory`/`parseJsonLines`.
@@ -123,14 +123,14 @@ Items in order. Each one has an acceptance criterion. A milestone (M0, M1…) is
 
 **Core** (the first release happens when all of them are done)
 
-- [ ] **M0. Project** (`nimlinear.nimble` with `license = "MIT"`, `CHANGELOG.md`, layout from [CONTRIBUTING](CONTRIBUTING.md); `LICENSE`, `.gitattributes` and `.github/workflows/ci.yml` already created). Acceptance: the CI matrix passes with a minimal test `tests/tsmoke.nim` (CI fails on purpose when there is no `tests/t*.nim`).
-- [ ] **M1. History types and JSON** (`Event`, `History`, distinct ids, `newHistory`, `toJsonLines`/`parseJsonLines`). Acceptance: a JSON round trip preserves bytes; invalid histories raise `ArgumentError`.
-- [ ] **M2. Checker** as a graph search, memoizing `(linearized, state)` for successes and failures (D-11), using the `Register` model. Acceptance: hand-written linearizable and non-linearizable fixtures; deterministic `order` (D-20); a negative compilation test shows that a `step` that can raise does not compile.
-- [ ] **M3. Pending operations** (D-08). Acceptance: the checker accepts both possibilities; an `EventFlag` lost-wakeup fixture with a timed `wait` is rejected.
-- [ ] **M4. Budget** and the `vkInconclusive` verdict. Acceptance: a low budget gives `vkInconclusive`; a sufficient budget gives a definitive verdict; peak memory measured and recorded in `docs/MEASUREMENTS.md` (method in [CONTRIBUTING](CONTRIBUTING.md#memory-measurement-m4)).
-- [ ] **M5. Diagnostics** (D-14): `Witness` with alternatives and a stable `report`. Acceptance: snapshots in `tests/golden/` identical on Linux, macOS and Windows.
-- [ ] **M6. Brute-force oracle** for up to ~8 operations, with a fixed seed (generator described in [CONTRIBUTING](CONTRIBUTING.md#brute-force-oracle-m6)). Acceptance: agrees with the checker on 10 thousand random histories.
-- [ ] **M7. Concurrent recorder** with `Atomic[int]` and a final merge. Acceptance: N threads record; each operation has one `invoke` and one `return`; unique `seq`.
+- [x] **M0. Project** (`nimlinear.nimble` with `license = "MIT"`, `CHANGELOG.md`, layout from [CONTRIBUTING](CONTRIBUTING.md); `LICENSE`, `.gitattributes` and `.github/workflows/ci.yml` already created). Acceptance: the CI matrix passes with a minimal test `tests/tsmoke.nim` (CI fails on purpose when there is no `tests/t*.nim`).
+- [x] **M1. History types and JSON** (`Event`, `History`, distinct ids, `newHistory`, `toJsonLines`/`parseJsonLines`). Acceptance: a JSON round trip preserves bytes; invalid histories raise `ArgumentError`.
+- [x] **M2. Checker** as a graph search, memoizing `(linearized, state)` for successes and failures (D-11), using the `Register` model. Acceptance: hand-written linearizable and non-linearizable fixtures; deterministic `order` (D-20); a negative compilation test shows that a `step` that can raise does not compile.
+- [x] **M3. Pending operations** (D-08). Acceptance: the checker accepts both possibilities; an `EventFlag` lost-wakeup fixture with a timed `wait` is rejected.
+- [x] **M4. Budget** and the `vkInconclusive` verdict. Acceptance: a low budget gives `vkInconclusive`; a sufficient budget gives a definitive verdict; peak memory measured and recorded in `docs/MEASUREMENTS.md` (method in [CONTRIBUTING](CONTRIBUTING.md#memory-measurement-m4)).
+- [x] **M5. Diagnostics** (D-14): `Witness` with alternatives and a stable `report`. Acceptance: snapshots in `tests/golden/` identical on Linux, macOS and Windows.
+- [x] **M6. Brute-force oracle** for up to ~8 operations, with a fixed seed (generator described in [CONTRIBUTING](CONTRIBUTING.md#brute-force-oracle-m6)). Acceptance: agrees with the checker on 10 thousand random histories.
+- [x] **M7. Concurrent recorder** with `Atomic[int]` and a final merge. Acceptance: N threads record; each operation has one `invoke` and one `return`; unique `seq`.
 - [ ] **M8. End-to-end example** in `examples/`: a real concurrent queue with an injectable bug, and a test that fails with the bug and passes without it. Acceptance: runs in CI.
 - [ ] **M9. Release** on the nimble index.
 
