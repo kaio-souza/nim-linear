@@ -86,6 +86,22 @@ jobs:
             nim c -r $flags "$f"
           done
 
+      # Diagnosis for an intermittent SIGSEGV seen once in tests/trounds.nim
+      # (Windows, orc, threads on, release): repeat it with stack traces, so a
+      # crash shows where it happened.
+      - name: Repeat trounds with stack traces (Windows, threads on)
+        if: runner.os == 'Windows' && matrix.threads == 'on'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags="--hints:off --mm:${{ matrix.mm }} --threads:on --stackTrace:on --lineTrace:on"
+          if [ "${{ matrix.mode }}" = "release" ]; then flags="$flags -d:release"; fi
+          nim c $flags -o:tests/trounds_diag.exe tests/trounds.nim
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            echo "run $i"
+            tests/trounds_diag.exe
+          done
+
   examples:
     name: examples (ubuntu-latest, nim 2.2.4)
     runs-on: ubuntu-latest

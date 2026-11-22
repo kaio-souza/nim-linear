@@ -76,12 +76,17 @@ proc runRound*[Obj, Op, Res](cfg: RoundsConfig, round: int,
   var obj: Obj
   setup(obj)
   var rec = newRecorder[Op, Res](cfg.threads)
-  var ths = newSeq[Thread[Ctx[Obj, Op, Res]]](cfg.threads)
+  # Thread objects in fixed shared memory (not a seq): their addresses must
+  # stay valid for the OS thread's whole life.
+  type T = Thread[Ctx[Obj, Op, Res]]
+  let ths = cast[ptr UncheckedArray[T]](allocShared0(sizeof(T) * cfg.threads))
   for t in 0 ..< cfg.threads:
     createThread(ths[t], worker[Obj, Op, Res],
                  Ctx[Obj, Op, Res](obj: addr obj, rec: addr rec, ops: addr ops[t], tid: t,
                                    exec: exec, hooks: hooks))
-  joinThreads(ths)
+  for t in 0 ..< cfg.threads: joinThread(ths[t])
+  for t in 0 ..< cfg.threads: `=destroy`(ths[t])
+  deallocShared(ths)
   if teardown != nil: teardown(obj)
   rec.snapshot()
 
