@@ -12,7 +12,7 @@
 > - a concurrent `Recorder` with `--threads:on`: per-thread buffers, no locks while recording, merged in `snapshot` (M7);
 > - the `BoundedQueue` example model used by tests (part of M8 groundwork).
 >
-> **On `master`, not yet confirmed by CI:** the end-to-end example [`examples/queue_race.nim`](examples/queue_race.nim) (M8), time as an event (`tick`, M10) and `checkPartitioned` (M11). The example passes locally with 1, 2 and 8 CPUs (correct queue linearizable in 300 rounds; injected bug rejected in the first round). Both pass the full test suite locally (Linux, Nim 2.2.4, orc/arc, threads on/off), including agreement with the brute-force oracle on 10,000 random histories with ticks.
+> **On `master`, not yet confirmed by CI:** the end-to-end example [`examples/queue_race.nim`](examples/queue_race.nim) (M8), time as an event (`tick`, M10), `checkPartitioned` (M11), perturbation points (`nimlinear/perturb`, M12, [`examples/queue_perturb.nim`](examples/queue_perturb.nim)) and the PCT scheduler (`nimlinear/schedule`, M13, [`examples/queue_pct.nim`](examples/queue_pct.nim)). Locally (Linux, Nim 2.2.4, 1/2/8 CPUs, debug/release, orc/arc): the M8 bug is rejected in the first round; with a narrow window, perturbation finds it in 1 round per seed versus tens to 200+ without; the PCT scheduler reproduces histories byte for byte and finds the bug within its budget of 50 seeds (at seed 2). Both pass the full test suite locally (Linux, Nim 2.2.4, orc/arc, threads on/off), including agreement with the brute-force oracle on 10,000 random histories with ticks.
 >
 > **Does not exist yet:** the `CircuitBreaker` model, and a release on the nimble index (M9). A milestone is checked in the [Roadmap](#roadmap) only after CI confirms it.
 
@@ -141,7 +141,7 @@ Items in order. Each one has an acceptance criterion. A milestone (M0, M1…) is
 - [ ] **M10. Time as an event** (`tick`, see [History](docs/HISTORY.md#time)).
 - [ ] **M11. `checkPartitioned`** (D-12), for P-compositional models (maps by key).
 - [ ] **M12. Perturbation** (D-18): module `nimlinear/perturb` with a fixed-seed `perturb()`, empty without `-d:nimlinearPerturb`. Acceptance: in the M8 example, the injected bug fails in fewer rounds with perturbation than without; the core compiles and passes its tests without importing the module.
-- [ ] **M13. PCT scheduler** (D-18), optional: module `nimlinear/schedule`. Acceptance: the same seed produces the same history, byte for byte, across repeated runs; the M8 bug is found within a documented round budget.
+- [ ] **M13. PCT scheduler** (D-18), optional: module `nimlinear/schedule`. Acceptance: the same seed produces the same history, byte for byte, across repeated runs; the M8 bug is found within a documented round budget (50 seeds, one round each).
 
 ## Release policy
 

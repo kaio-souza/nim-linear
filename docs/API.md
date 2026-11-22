@@ -239,6 +239,40 @@ proc fromPayload*[T](n: JsonNode, t: typedesc[T]): T   # default: n.to(T)
 
 The defaults work for simple objects. For an `object` with a `case` (variant), write both hooks, because `to` from `std/json` does not cover every case. Format in [History](HISTORY.md#saved-format-json). `parseJsonLines` raises `ValueError` for malformed JSON and `ArgumentError` for an invalid history.
 
+## Optional modules
+
+Not imported by `nimlinear`; whoever does not import them pays nothing (D-18).
+
+### `nimlinear/perturb` (M12)
+
+```nim
+template perturb*()                                         # perturbation point
+proc setPerturbation*(enabled: bool, seed = 0) {.raises: [].}
+```
+
+- Without `-d:nimlinearPerturb`, `perturb()` is an empty template and `setPerturbation` does nothing.
+- With the flag, each `perturb()` draws from a per-thread generator seeded from `seed`: nothing (50%), a short `cpuRelax` spin (25%) or `sleep(0)` (25%). Enabled by default; `setPerturbation(false)` turns the draw off at run time (useful to compare in one binary). The OS still picks the interleaving, so a seed does not reproduce a run.
+- Place points where another thread acting would matter, typically between reading and changing shared state. Example: [`examples/queue_perturb.nim`](../examples/queue_perturb.nim).
+
+### `nimlinear/schedule` (M13)
+
+Requires `--threads:on` and `-d:nimlinearPerturb`.
+
+```nim
+type Scheduler* = object          # not copyable; one active at a time
+
+proc initScheduler*(s: var Scheduler, threads: Positive, seed: int, depth = 3, steps = 100)
+proc deinitScheduler*(s: var Scheduler)
+proc enter*(s: var Scheduler, thread: int) {.raises: [].}   # first call in each thread
+proc leave*(s: var Scheduler) {.raises: [].}                 # last call in each thread
+```
+
+- Only one registered thread runs at a time; threads switch only at `perturb()`, `enter` and `leave`. While a scheduler is installed, `perturb()` is its switch point instead of a random draw.
+- Choice of the next thread: PCT. Each thread gets a random distinct priority; the highest-priority unfinished thread runs; at `depth - 1` steps drawn from `1 .. steps`, the running thread drops below every initial priority.
+- Same seed, same threads, same code: same interleaving, so the `Recorder` history is the same byte for byte.
+- **Rule:** between `enter` and `leave`, a thread must not wait for another registered thread (no `perturb()` while holding a lock others take, no joins, no blocking reads). Otherwise the round hangs.
+- Example: [`examples/queue_pct.nim`](../examples/queue_pct.nim).
+
 ## Budget
 
 The search is exponential in the worst case. `budget` limits how many states (`(linearized, state)` pairs) are visited.

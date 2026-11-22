@@ -119,7 +119,9 @@ A complete example of this step is [`examples/queue_race.nim`](../examples/queue
 
 ## Step 5b (optional): perturbation
 
-If the bug you care about has a narrow window (between reading and changing shared state), put `perturb()` at those points in the object under test and compile the test with `-d:nimlinearPerturb` (M12, D-18). Without the flag, `perturb()` generates no code. Confirm step 5 again: the injected bug should fail in fewer rounds.
+If the bug you care about has a narrow window (between reading and changing shared state), put `perturb()` at those points in the object under test and compile the test with `-d:nimlinearPerturb` (M12, D-18). Without the flag, `perturb()` generates no code. Confirm step 5 again: the injected bug should fail in fewer rounds. Example: [`examples/queue_perturb.nim`](../examples/queue_perturb.nim).
+
+To reproduce a failing interleaving exactly, register the threads in a `Scheduler` from `nimlinear/schedule` (M13): with the same seed, the round produces the same history. Do not put `perturb()` inside a critical section when using it (see [API](API.md#nimlinearschedule-m13)). Example: [`examples/queue_pct.nim`](../examples/queue_pct.nim).
 
 ## Step 6: CI
 

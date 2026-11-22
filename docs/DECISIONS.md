@@ -144,7 +144,7 @@ Status: **Proposed** (not implemented yet) or **Accepted**.
 
 ## D-18: sampled interleavings in optional modules; exhaustive exploration stays out
 
-- **Status:** Proposed
+- **Status:** Accepted (implemented in M12 and M13)
 - **Context:** D-07 leaves exhaustive exploration out, and the checker only sees the order the OS picked. Bugs with a narrow window (between reading and changing shared state) show up rarely, even with many rounds.
 - **Choice:** two optional modules, separate from the core, that only **generate** more varied executions; the result of each one still goes to `checkLinearizable` unchanged:
   1. **Perturbation** (`nimlinear/perturb`, M12): `perturb()` points the user places inside the object under test. In test mode, each point draws, with a fixed seed, between doing nothing, `cpuRelax` or `sleep(0)`. Outside test mode (without `-d:nimlinearPerturb`), `perturb()` is an empty template, with no cost.
