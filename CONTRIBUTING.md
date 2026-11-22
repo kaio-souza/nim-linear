@@ -95,10 +95,42 @@ Short messages in the imperative mood. A change to the saved format (D-05) never
 A milestone (M0, M1…) is a unit of work, not a version (see [Releasing](#releasing)). A box is checked only after the CI matrix confirms it. What each milestone delivered is in [`CHANGELOG.md`](CHANGELOG.md).
 
 - [x] **M0–M8. Core**: project and CI, history types and JSON Lines, checker with memoized graph search, pending operations, budget, diagnostics, brute-force oracle, concurrent recorder, end-to-end example.
-- [ ] **M9. First release** (0.1.0): not published yet (see [Releasing](#releasing)).
+- [x] **M9. First release** (0.1.0): tagged. Not on the nimble index yet; that waits until the library is useful enough to the community (see [Releasing](#releasing)).
 - [x] **M10–M13. Optional features**: time as an event (`tick`), `checkPartitioned`, perturbation points, PCT scheduler.
 - [x] **M14–M24. Refinement** after comparing with Porcupine, Knossos and Lincheck ([`docs/COMPARISON.md`](docs/COMPARISON.md)): nondeterministic specifications (`outcomes`), format version line, `shrink`, `runRounds`, timeline (text and HTML), `SchedLock`, wall-clock timeout, generic partition key, linear-time search, benchmark suite with a CI check, private `History` fields.
 
+### Planned (after 0.1.0), in priority order
+
+Each item is a unit of work with the same rules as the milestones above. Items that change the public API or the JSON format are marked **breaking** and need an entry in [Decisions](docs/DECISIONS.md) before the code.
+
+- [ ] **P1. Async usage guide.** Document how to record and check code that runs under async (`asyncdispatch`, Chronos): tasks that migrate between OS threads, `begin` and `finish` on different threads, what counts as an operation boundary. Example in `examples/`.
+- [ ] **P2. More shipped models**: `Map` (with `partition` by key), `Stack`, `Semaphore`, each with JSON hooks, a model test and an example.
+- [ ] **P3. Default operation generator.** For each shipped model, a generator that draws operations from the model's own types, so simple tests need no `genOp`. Manual `genOp` stays the default for custom models. No new dependency (D-01).
+- [ ] **P4. Shrink with replay** (needs a Decisions entry first). After the current shrink, re-run the real code on the reduced scenario, under the scheduler when one is used, and keep a removal only if the failure reproduces. Deterministic for a given seed. Optional flag; the history-only shrink stays the default.
+- [ ] **P5. Specifications with unbounded results.** Decide how to model results drawn from an open set (for example, any free id), such as a predicate on the observed result. Requires a Decisions entry and, if it changes `outcomes`, a **breaking** note.
+- [ ] **P6. Interception of `Lock` and atomics** (large, after real use). Switch points for the primitives under test without manual `perturb()`, keeping determinism under the scheduler. Not started until P4 and real use show the need.
+
+Out of scope, by existing decisions: exhaustive interleaving exploration (D-07, D-02) and property-based testing integration (D-10). Relaxed memory orderings are a structural limit of a sequential-consistency checker and are only documented.
+
+### Found on code review
+
+Gaps found by rereading the source, not yet measured unless stated. R1 and R2 were marked pre-0.1.0 but 0.1.0 was released without fixing them; until they are fixed they are listed as known issues in the README and the CHANGELOG.
+
+- [ ] **R1. Exceptions in `exec` are not reported (known issue in 0.1.0).** In `src/nimlinear/rounds.nim`, the worker has no error handling: an exception kills the thread, the operation stays pending, and the round can pass. The harness must tell a pending operation apart from a crash: report the exception as a failure with its message, and guarantee `teardown` and the `ThreadHooks` `leave` run (try/finally), so a crash cannot hang a scheduled round. First verify what Nim does with an unhandled exception in a thread: it may abort the whole process rather than only kill the thread. Also free the shared thread array and join the started threads if `createThread` fails part-way.
+- [ ] **R2. Intermittent SIGSEGV on Windows (known issue in 0.1.0).** Seen once in `tests/trounds.nim` (Windows, orc, threads on, release); the CI step that repeats it with stack traces is in `.github/workflows/ci.yml`. Cause unknown. Either fix it with evidence from that trace, or document it as a known issue in the README and CHANGELOG.
+- [ ] **R3. `runRounds` ignores partitioning.** It always calls `checkLinearizable`; `shrink` accepts `partitioned` but the harness never passes it. Use `checkPartitioned` when the model defines `partition`, and expose the choice in `RoundsConfig`. The `shrink` call in `runRounds` must receive the same choice (`partitioned`).
+- [ ] **R4. Wall-clock timeout in the harness.** `RoundsConfig` exposes only `budget`. Add a `timeout` field passed to the checker, with the same caveat as in the API: it makes the verdict machine-dependent.
+- [ ] **R5. Initial state per round.** `runRounds` takes one fixed `init`. Allow the initial state to depend on the round (for example, a function of the round number), so a test can start from several states without writing its own loop.
+- [ ] **R6. Thread creation per round.** Each round creates and joins `threads` OS threads. Measure the cost with many rounds; if it dominates, reuse a pool of threads across rounds. Measure before changing.
+- [ ] **R7. Recorder overhead is not measured.** Every event takes the shared atomic counter, which is a contention point and can change the interleaving being tested. Measure the overhead and its effect on the observed interleavings, and document the result in `docs/MEASUREMENTS.md`.
+- [ ] **R8. Model contract not enforced.** `step` must be pure, but a `ref` or a global inside `step` compiles without a warning, and the checker's assumptions and its determinism break silently. Document the rule with an example of what fails, and consider a compile-time check where Nim allows one.
+- [ ] **R9. Saved histories go to a fixed name.** `runRounds` writes `<name>-seed<seed>-round<r>.jsonl` to `getTempDir()` by default, so a later run with the same seed overwrites an earlier file without warning. Document it, or add a unique suffix when the file exists.
+- [ ] **R10. No round or seed for the scheduler.** `setup(obj)` receives neither the round nor the seed, so a `Scheduler` created in `setup` (as the Guide says) gets the same PCT priorities and change points in every round; only the operations vary. `tests/trounds.nim` works around it with a global round counter. Pass the round (or a derived scheduler seed) to `setup`, or integrate the scheduler into `runRounds`, and fix the Guide.
+- [ ] **R11. `perturb()` from an unregistered thread under a scheduler.** `switchPoint` uses a thread-local id that defaults to 0, so the main thread (in `setup`/`teardown`) or any thread outside `ThreadHooks` acts as thread 0 and can hang the round or switch before every thread has reached `enter`. Ignore threads that did not call `enter` (and document it), or raise.
+- [ ] **R12. `shrink` has no `timeout`.** It runs up to O(n²) checks, each with the full `budget`, so a large failing history can take very long. Add a `timeout`/overall budget and document the cost.
+- [ ] **R13. `order` of `checkPartitioned` is not a global order.** It is the concatenation of the per-key orders, and ticks appear once per part. `docs/API.md` describes `order` only for `checkLinearizable`. Document it, or build a real merged order.
+- [ ] **R14. A failed save is silent.** In `runRounds`, an error while creating the directory or writing the file leaves `savedTo = ""` with no reason. Keep the error message in `RoundsResult` and show it in `describe`.
+- [ ] **R15. Seed arithmetic in `runRound`.** `cfg.seed * 1_000_003 + round + 1` overflows for very large seeds (`OverflowDefect` in debug, wraps in release), and `(seed, round + 1_000_003)` collides with `(seed + 1, round)`. Use a proper mixing function and document that `(seed, round)` is the only guaranteed identity.
 
 ## Releasing
 

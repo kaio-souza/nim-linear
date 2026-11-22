@@ -4,6 +4,10 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 ## Unreleased
 
+### Known issues in 0.1.0
+
+Listed in the README ("Known issues") and in the Roadmap (R1–R15): exceptions in `exec` are not reported; an intermittent SIGSEGV on Windows; `runRounds` ignores `partition`, has no `timeout` and one fixed initial state; the scheduler gets the same seed in every round; `shrink` has no time limit.
+
 ## 0.1.0
 
 First release. Everything below is new in 0.1.0; no earlier version was published, so no change is marked breaking.

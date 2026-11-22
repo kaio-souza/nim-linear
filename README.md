@@ -178,6 +178,15 @@ Read it this way: operations `1`, `4` and `7` form the longest prefix that the m
 
 Comparison with other tools (Porcupine, Knossos, Lincheck, Thread Collider): [`docs/COMPARISON.md`](docs/COMPARISON.md).
 
+## Known issues
+
+Tracked in the [Roadmap](CONTRIBUTING.md#found-on-code-review) (R1, R2) and still open in 0.1.0:
+
+- **An exception raised by `exec` is not reported as a failure.** The operation stays pending and the round can still pass. Make `exec` catch exceptions and return an error value in the result.
+- **Intermittent SIGSEGV on Windows** was seen once in `tests/trounds.nim` (orc, threads on, release). The cause is unknown; CI repeats that test with stack traces.
+- `runRounds` always uses `checkLinearizable` (it does not use `partition`), has no wall-clock `timeout`, and takes one fixed initial state for every round.
+- A scheduler created in `setup` gets the same seed in every round unless you keep your own round counter.
+
 ## Terms
 
 | Term | Meaning |
