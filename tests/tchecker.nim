@@ -116,9 +116,10 @@ suite "checker: budget":
     check checkLinearizable(h, RegState(), RegisterModel).kind == vkNotLinearizable
 
 suite "checker: timeout (M20)":
-  test "a short timeout gives vkInconclusive with timedOut":
-    # 20 fully overlapping writes and a read of a value never written: ~2^20
-    # configurations, far more than 50 ms of search.
+  test "an expired timeout gives vkInconclusive with timedOut":
+    # Deterministic: a 1 ns timeout has always expired by the first check,
+    # which happens at 256 visited states. The history (20 fully overlapping
+    # writes, then an impossible read) has far more than 256 states.
     var evs: seq[Ev]
     for i in 1 .. 20:
       evs.add invokeEvent[RegOp, RegRes](i, i, i, write(i))
@@ -126,10 +127,10 @@ suite "checker: timeout (M20)":
       evs.add returnEvent[RegOp, RegRes](i, i, 20 + i, ok())
     evs.add op(21, 0, 41, 42, read(), ok(-1))
     let v = checkLinearizable(newHistory(evs), RegState(), RegisterModel,
-                              budget = high(int), timeout = initDuration(milliseconds = 50))
+                              budget = high(int), timeout = initDuration(nanoseconds = 1))
     check v.kind == vkInconclusive
     check v.timedOut
-    check v.statesExplored > 0
+    check v.statesExplored == 256
 
   test "no timeout by default; budget exhaustion is not a timeout":
     var evs: seq[Ev]

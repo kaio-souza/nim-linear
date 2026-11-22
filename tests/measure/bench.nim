@@ -18,8 +18,10 @@
 ##   E  like C, but every 10th op never returns (pending). Known limit: an
 ##      unlinearized pending op stays available forever, so the search state
 ##      grows with the number of pending ops (about quadratic overall).
-## --check fails (exit 1) on a large regression: C must scale at most 3x and
-## E at most 4.5x when the history doubles; absolute caps are generous.
+## --check fails (exit 1) on a large regression, using only ratios measured
+## in the same run (absolute times vary up to 2x between runs on one
+## machine): C must scale at most 3x and E at most 4.5x when the history
+## doubles, and partitioning must make D at least 5x faster.
 
 import std/[hashes, monotimes, os, random, strutils, times]
 import nimlinear
@@ -158,8 +160,6 @@ if checkMode:
     if not cond: failures.add msg
   need(c[2] < max(3 * c[1], 5.0), "C does not scale linearly: " & $c)
   need(e[2] < max(4.5 * e[1], 5.0), "E grows faster than expected: " & $e)
-  need(a[2] < 3000, "A n=14 over 3 s: " & $a[2] & " ms")
-  need(b[1] < 3000, "B n=8 over 3 s: " & $b[1] & " ms")
   need(dPart * 5 < dWhole, "checkPartitioned not 5x faster than checkLinearizable on D")
   if failures.len > 0:
     echo "\nREGRESSION:"
