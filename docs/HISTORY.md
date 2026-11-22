@@ -34,14 +34,14 @@ Rules:
 
 ## Concurrent recording (recorder)
 
-Not implemented yet (M7). Options considered:
+Implemented (M7). Options considered:
 
 | Option | Advantage | Disadvantage | Decision |
 |---|---|---|---|
 | per-thread buffer, merged at the end under a `Lock` | little contention on the hot path | the merge must sort by `seq` | **chosen** |
 | shared lock-free channel | order arrives ready | more code to validate | rejected for the core |
 
-With the choice above, each thread writes only to its own buffer. The `Lock` (`std/locks`) only shows up in the final merge. `--threads:on` is required for the recorder; the checker works without threads.
+With the choice above, each thread writes only to its own buffer, and `seq` numbers come from one shared `Atomic[int]`. No lock is taken while recording: the recording thread is encoded in the `OpId` (`id = k * threads + thread + 1`), so `finish` finds the right buffer without a shared lookup. The merge in `snapshot` runs after all threads joined, so it needs no lock either. `--threads:on` is required for the recorder; the checker works without threads.
 
 Typical use:
 

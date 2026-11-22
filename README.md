@@ -6,9 +6,13 @@
 > - history types, `newHistory` and JSON Lines (M1);
 > - `checkLinearizable` with the `Register` model (M2);
 > - pending operations and the `EventFlag` model, with a lost-wakeup fixture that the checker rejects (M3);
-> - a search budget that returns `vkInconclusive` (part of M4; the memory measurement is not done yet).
+> - a search budget that returns `vkInconclusive`, plus optional `-d:nimlinearMeasure` sampling and preliminary measurements in [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) (M4);
+> - stable `report` text and golden snapshots for verdicts (M5);
+> - a brute-force oracle test comparing 10,000 random histories per model (`Register` and `BoundedQueue`) against the checker (M6);
+> - a concurrent `Recorder` with `--threads:on`: per-thread buffers, no locks while recording, merged in `snapshot` (M7);
+> - the `BoundedQueue` example model used by tests (part of M8 groundwork).
 >
-> **Does not exist yet:** `report`, the concurrent recorder, the brute-force oracle, the end-to-end example, and the `BoundedQueue` and `CircuitBreaker` models. No milestone is checked in the [Roadmap](#roadmap) until CI confirms it.
+> **Does not exist yet:** the end-to-end example, the `CircuitBreaker` model, and full M4 memory-measurement acceptance in CI. No milestone is checked in the [Roadmap](#roadmap) until CI confirms it.
 
 A Nim library, **stdlib only**, that checks whether a history of concurrent operations is **linearizable**: is there a valid sequential order of the operations that explains exactly the observed results?
 
@@ -24,7 +28,7 @@ thread B: dequeue()  -> 7
 thread C: dequeue()  -> 7      (the same element delivered twice)
 ```
 
-No sequential order of a queue hands a single `7` to two `dequeue` calls. The checker is meant to return `vkNotLinearizable` pointing at the operation that does not fit (the queue model is not implemented yet).
+No sequential order of a queue hands a single `7` to two `dequeue` calls. The checker is meant to return `vkNotLinearizable` pointing at the operation that does not fit (the `BoundedQueue` model exists; the end-to-end example with a real queue does not yet).
 
 ## Documentation index
 
@@ -76,7 +80,7 @@ Use it for objects whose operations should look **atomic**: each call has a poin
 
 ## Usage example (draft)
 
-> Does not run yet: `newRecorder` and `report` are not implemented. `checkLinearizable` and the `Register` model already exist.
+> Draft: `checkLinearizable`, `report`, `Recorder` (with `--threads:on`) and the `Register` model exist, but this snippet is abbreviated (the `...` stands for the thread code) and is not compiled by any test. A runnable end-to-end example is M8.
 
 A shared register with `read`, `write` and `cas`. Full model in [Models](docs/MODELS.md#register).
 
@@ -99,7 +103,7 @@ Details in [API](docs/API.md), [Models](docs/MODELS.md) and the [Usage guide](do
 
 ## Guarantees
 
-These are design goals. Today they apply only to the code that already exists (history, JSON and checker) and have been verified only by local tests.
+These are design goals. Today they apply only to the code that already exists (history, JSON, checker, report and recorder) and have been verified only by local tests.
 
 - **No external dependencies.** Only `std/*`: `atomics`, `locks`, `json`, `hashes`, `sets`, `tables`, `random`, `unittest` (and `monotimes`, for diagnostics only).
 - **The core does not raise.** `checkLinearizable` is `{.raises: [].}`; the contract requires the model's `step` to be as well. Usage errors (invalid history) show up earlier, in `newHistory`/`parseJsonLines`.

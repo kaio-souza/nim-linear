@@ -100,8 +100,18 @@ proc checkLinearizable*[S, Op, Res](h: History[Op, Res], init: S, model: typedes
   var bestLen = -1
   var best: Witness[Op, Res]
 
+  when defined(nimlinearMeasure):
+    let baseMem = getOccupiedMem()
+    var peakMem = baseMem
+    template sampleMem() =
+      if (explored and 1023) == 0:
+        let m = getOccupiedMem()
+        if m > peakMem: peakMem = m
+
   while true:
     if completedLeft == 0:
+      when defined(nimlinearMeasure):
+        debugEcho "nimlinearMeasure peakDelta=", max(peakMem, getOccupiedMem()) - baseMem, " explored=", explored
       var order: seq[OpId]
       for i in path: order.add ops[i].id
       return Verdict[Op, Res](kind: vkLinearizable, order: order)
@@ -143,11 +153,17 @@ proc checkLinearizable*[S, Op, Res](h: History[Op, Res], init: S, model: typedes
       bits.clearBit(i)
       continue
     if explored >= budget:
+      when defined(nimlinearMeasure):
+        debugEcho "nimlinearMeasure peakDelta=", max(peakMem, getOccupiedMem()) - baseMem, " explored=", explored
       return Verdict[Op, Res](kind: vkInconclusive, statesExplored: explored, budget: budget)
     visited.incl cfg
     inc explored
+    when defined(nimlinearMeasure):
+      sampleMem()
     path.add i
     if not ops[i].pending: dec completedLeft
     stack.add Frame[S, Res](state: e.next, cand: 0, minRet: minRetOf(bits))
 
+  when defined(nimlinearMeasure):
+    debugEcho "nimlinearMeasure peakDelta=", max(peakMem, getOccupiedMem()) - baseMem, " explored=", explored
   Verdict[Op, Res](kind: vkNotLinearizable, witness: best)

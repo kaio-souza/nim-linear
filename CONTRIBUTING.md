@@ -26,10 +26,11 @@ tests/
   tcompile_raises.nim       # negative compilation test (a step that raises does not compile)
   fixtures/                 # .jsonl histories
   golden/                   # expected report output for each fixture
-  oracle/                   # brute-force oracle (M6)
+  oracle/                   # brute-force oracle and history generator (M6)
+  measure/                  # memory measurement harness (M4), not run by CI
 examples/                   # programs that run in CI (M8)
 docs/
-  MEASUREMENTS.md           # measured memory and states (to be created in M4)
+  MEASUREMENTS.md           # measured memory and states (M4)
 ```
 
 ## Running the tests

@@ -151,7 +151,7 @@ Filling rules (D-20):
 
 ### Recorder
 
-Not implemented yet (M7). Exists only with `--threads:on`. Records `invoke`/`return` from several threads without contention on the hot path: each thread writes to its own buffer and the merge happens in `snapshot` (see [History](HISTORY.md#concurrent-recording-recorder)).
+Implemented (M7). Exists only with `--threads:on`. Records `invoke`/`return` from several threads without locks on the hot path: each thread writes to its own buffer, `seq` numbers come from a shared atomic counter, the thread is encoded in the `OpId`, and `snapshot` merges by `seq` (see [History](HISTORY.md#concurrent-recording-recorder)).
 
 ```nim
 type Recorder*[Op, Res] = object   # not copyable (=copy disabled); share it by ptr
@@ -160,7 +160,6 @@ proc newRecorder*[Op, Res](threads: Positive): Recorder[Op, Res]
 proc begin*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.raises: [].}
 proc finish*[Op, Res](r: var Recorder[Op, Res], id: OpId, res: Res) {.raises: [].}
 proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [ArgumentError].}
-template record*(r: var Recorder, thread: int, call: untyped, body: untyped): untyped   # planned
 ```
 
 - `threads`: number of threads that will record. `thread` in `begin` is an index in `0 ..< threads` (it becomes the event's `ThreadId`). Each index must be used by **one** thread only.
@@ -213,8 +212,6 @@ Checks the invariants described above and sorts by `seq`.
 
 ### `report`
 
-Not implemented yet (M5).
-
 ```nim
 proc report*[Op, Res](v: Verdict[Op, Res]): string
 ```
@@ -247,7 +244,7 @@ The search is exponential in the worst case. `budget` limits how many states (`(
 | 3 threads × 5 ops | 1 000 – 50 000 | 1 000 000 |
 | 4 threads × 8 ops | may exceed 1 000 000 | measure first; consider splitting the history |
 
-These numbers are estimates to be confirmed in M4. Rule of thumb: if `vkInconclusive` shows up in a regression test, **do not raise the budget without measuring**. First shrink the history (fewer threads, fewer operations per round), because the problem is usually scale, not speed.
+These numbers are still estimates; preliminary measurements of one history shape are in [Measurements](MEASUREMENTS.md). Rule of thumb: if `vkInconclusive` shows up in a regression test, **do not raise the budget without measuring**. First shrink the history (fewer threads, fewer operations per round), because the problem is usually scale, not speed.
 
 ## Errors
 

@@ -1,0 +1,7 @@
+not linearizable
+prefix: 1
+stuck: op 2
+call: read()
+result: (value: 0, ok: true)
+alternatives:
+  - op 2: expected (value: 1, ok: true), observed (value: 0, ok: true)

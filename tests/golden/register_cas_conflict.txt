@@ -1,0 +1,7 @@
+not linearizable
+prefix: 1
+stuck: op 2
+call: cas(0, 2)
+result: (value: 0, ok: true)
+alternatives:
+  - op 2: expected (value: 0, ok: false), observed (value: 0, ok: true), why: cas failed: current value 1
