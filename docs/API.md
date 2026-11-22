@@ -26,16 +26,18 @@ type
 
 Each call produces two events: `invoke` (before the call) and `return` (after it). An operation with an `invoke` and no `return` is **pending** (see [History](HISTORY.md#pending-operations)).
 
+A **tick** (M10) is a third kind: an instantaneous operation with a single event and no `return`, linearized exactly at its `seq`. It is meant for clock advances (see [History](HISTORY.md#time)). Its `call` goes through the model's `step` like any operation; the result `step` returns is not compared with anything.
+
 ```nim
 type
-  EventKind* = enum ekInvoke, ekReturn
+  EventKind* = enum ekInvoke, ekReturn, ekTick
 
   Event*[Op, Res] = object
     op*: OpId
     thread*: ThreadId
     seqNo*: SeqNo                 # called `seq` in prose and in JSON (D-19)
     case kind*: EventKind
-    of ekInvoke: call*: Op        # what was requested
+    of ekInvoke, ekTick: call*: Op  # what was requested
     of ekReturn: res*: Res        # what came back
 ```
 
@@ -49,9 +51,9 @@ type History*[Op, Res] = object
 Invariants, checked by `newHistory` (a history that violates any of them is rejected with `ArgumentError` at construction, not at check time):
 
 1. `seq` is unique across the whole history;
-2. each `OpId` has exactly one `invoke` and at most one `return`;
+2. each `OpId` has exactly one `invoke` and at most one `return`, or exactly one `tick` and no other event;
 3. `invoke.seq < return.seq`, and both have the same `thread`;
-4. a thread does not invoke a new operation while it has another one without a `return` (each thread is sequential).
+4. a thread does not invoke a new operation while it has another one without a `return` (each thread is sequential). A tick does not open its thread: it may be recorded by any thread at any time.
 
 `newHistory` sorts the events by `seq`; input order does not matter.
 
@@ -72,6 +74,7 @@ Shortcuts to build events by hand (fixtures, tests) without writing the variant 
 ```nim
 proc invokeEvent*[Op, Res](op, thread, seqNo: int, call: Op): Event[Op, Res]
 proc returnEvent*[Op, Res](op, thread, seqNo: int, res: Res): Event[Op, Res]
+proc tickEvent*[Op, Res](op, thread, seqNo: int, call: Op): Event[Op, Res]     # M10
 ```
 
 `Event` has its own `==` (Nim's default `==` does not compare objects with a `case`), which requires `==` for `Op` and `Res`.
@@ -159,12 +162,14 @@ type Recorder*[Op, Res] = object   # not copyable (=copy disabled); share it by 
 proc newRecorder*[Op, Res](threads: Positive): Recorder[Op, Res]
 proc begin*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.raises: [].}
 proc finish*[Op, Res](r: var Recorder[Op, Res], id: OpId, res: Res) {.raises: [].}
+proc tick*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.raises: [].}   # M10
 proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [ArgumentError].}
 ```
 
 - `threads`: number of threads that will record. `thread` in `begin` is an index in `0 ..< threads` (it becomes the event's `ThreadId`). Each index must be used by **one** thread only.
 - `begin` takes the `invoke` `seq` **before** returning; call it before the real operation. `finish` takes the `return` `seq`; call it afterwards. See [event order](HISTORY.md#event-order).
 - `begin`/`finish` do not raise and do not validate usage, to keep the hot path light. Errors (index out of range, `finish` twice, `finish` without `begin`) show up as `ArgumentError` in `snapshot`, which goes through `newHistory`.
+- `tick` records an instantaneous event with one `seq`. Call it right **after** advancing the fake clock, from the thread that advanced it. A bad `thread` index shows up as `ArgumentError` in `snapshot`, like the other misuses.
 - `snapshot` may only be called after every thread has finished (`joinThreads`). It does not clear the buffers; for the next round, create another recorder.
 - Threads receive a `ptr Recorder` (`addr rec`); the recorder must outlive them. Full example in the [Guide](GUIDE.md#step-3-small-rounds).
 
@@ -183,16 +188,16 @@ proc checkLinearizable*[S, Op, Res](
 - The search runs over a **graph**: it keeps the configurations already visited, both those that led to success and those that failed (D-11). A configuration that already failed is not explored again.
 - Does not raise. Usage errors (invalid history) are handled in `newHistory`. The model's `step` must be `{.raises: [].}`; otherwise the code does not compile.
 
-### `checkPartitioned` (planned, D-12, M11)
+### `checkPartitioned`
 
-Used only when the model defines `partition` and the specification is P-compositional. The history is split and each part is checked separately, with the same `init`. The overall verdict is `vkLinearizable` only if every part is; `vkInconclusive` if some part is inconclusive and none is `vkNotLinearizable`.
+Implemented (M11, D-12). Used only when the model defines `partition` and the specification is P-compositional. The history is split and each part is checked separately, with the same `init`. Ticks (M10) have no key: each one is copied into **every** part, and `partition` is never called for them. The overall verdict is `vkLinearizable` only if every part is; `vkInconclusive` if some part is inconclusive and none is `vkNotLinearizable`.
 
 | Field | Rule |
 |---|---|
 | `budget` | applies **per partition**, not to the total |
-| `order` | the orders of each partition concatenated, in increasing key order; it is **not** a global real-time order |
+| `order` | the orders of each partition concatenated, in increasing key order; it is **not** a global real-time order. A tick appears once per partition |
 | `witness` | the one from the failed partition whose `stuck` has the lowest `seq` |
-| `statesExplored` | sum over every partition checked |
+| `statesExplored` | sum over every partition (all of them are checked, even after a failure) |
 | `budget` (in the verdict) | the per-partition budget received |
 
 ```nim
@@ -200,7 +205,7 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S,
     model: typedesc, budget = 1_000_000): Verdict[Op, Res] {.raises: [].}
 ```
 
-The library does not check the partition's validity condition. Whoever writes the model is responsible for it. If the partition is invalid, the verdict may be wrong, and the library cannot detect that.
+For ticks, the condition also requires that a tick acts on each key independently (for example, aging every entry of a TTL map). The library does not check the partition's validity condition. Whoever writes the model is responsible for it. If the partition is invalid, the verdict may be wrong, and the library cannot detect that.
 
 ### `newHistory`
 
@@ -250,7 +255,7 @@ These numbers are still estimates; preliminary measurements of one history shape
 
 | Situation | Behavior |
 |---|---|
-| history with a repeated `seq`, `return` before `invoke`, `return` without `invoke` or two open operations on the same thread | `ArgumentError` in `newHistory` (and in `parseJsonLines`, `Recorder.snapshot`) |
+| history with a repeated `seq`, `return` before `invoke`, `return` without `invoke`, a `return` for a tick, a reused tick id, or two open operations on the same thread | `ArgumentError` in `newHistory` (and in `parseJsonLines`, `Recorder.snapshot`) |
 | malformed JSON | `ValueError` in `parseJsonLines` |
 | `step` that can raise | compilation error: the contract requires `{.raises: [].}` (see [Models](MODELS.md#contract)) |
 | budget exhausted | `vkInconclusive`, never `vkLinearizable` or `vkNotLinearizable` |

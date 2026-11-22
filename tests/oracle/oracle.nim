@@ -17,6 +17,7 @@ type
     res*: Res
     inv*, ret*: int
     pending*: bool
+    tick*: bool      ## instantaneous (M10): inv == ret, result not compared
 
 proc oracleLinearizable*[S, Op, Res](ops: seq[Spec[Op, Res]], init: S,
                                      model: typedesc): bool =
@@ -35,7 +36,7 @@ proc oracleLinearizable*[S, Op, Res](ops: seq[Spec[Op, Res]], init: S,
     for i in 0 ..< n:
       if used[i] or ops[i].inv > minRet: continue
       let e = step(model, state, ops[i].call)
-      if not ops[i].pending and not (e.res == ops[i].res): continue
+      if not ops[i].pending and not ops[i].tick and not (e.res == ops[i].res): continue
       used[i] = true
       if dfs(e.next, if ops[i].pending: left else: left - 1): return true
       used[i] = false
@@ -45,7 +46,8 @@ proc oracleLinearizable*[S, Op, Res](ops: seq[Spec[Op, Res]], init: S,
 
 proc generate*[S, Op, Res](rng: var Rand, init: S, model: typedesc,
                            genOp: proc (r: var Rand): Op,
-                           otherRes: proc (r: var Rand, res: Res): Res):
+                           otherRes: proc (r: var Rand, res: Res): Res,
+                           maxTicks = 0, tickCall = default(Op)):
                            tuple[h: History[Op, Res], ops: seq[Spec[Op, Res]]] =
   mixin step
   let threads = rng.rand(1..3)
@@ -62,12 +64,20 @@ proc generate*[S, Op, Res](rng: var Rand, init: S, model: typedesc,
   var state = init
   var evs: seq[Event[Op, Res]]
   var s = 0
+  var ticksLeft = if maxTicks > 0: rng.rand(0..maxTicks) else: 0
   while true:
     var ready: seq[int]
     for t in 0 ..< threads:
       if phase[t] != stopped and (phase[t] != idle or queue[t].len > 0): ready.add t
+    if ticksLeft > 0: ready.add -1             # the clock, an extra "thread"
     if ready.len == 0: break
     let t = ready[rng.rand(ready.len - 1)]
+    if t == -1:
+      dec ticksLeft; inc s
+      state = step(model, state, tickCall).next
+      ops.add Spec[Op, Res](call: tickCall, tick: true, inv: s, ret: s)
+      evs.add tickEvent[Op, Res](ops.len, threads, s, tickCall)
+      continue
     case phase[t]
     of idle:
       cur[t] = queue[t][0]; queue[t].delete(0)
@@ -97,7 +107,7 @@ proc generate*[S, Op, Res](rng: var Rand, init: S, model: typedesc,
   if rng.rand(1) == 1:
     var done: seq[int]
     for i, o in kept:
-      if not o.pending: done.add i
+      if not o.pending and not o.tick: done.add i
     if done.len > 0:
       let j = done[rng.rand(done.len - 1)]
       let bad = otherRes(rng, kept[j].res)

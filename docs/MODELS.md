@@ -50,7 +50,7 @@ If the model reimplements all of the object's logic, the oracle duplicates the c
 Objects whose result depends on the clock (timeouts, TTL, limiters) cannot read the clock in `step`. Two options; pick **one per test**:
 
 1. **Clock fixed for the round (recommended).** The test prepares the object and advances a fake clock **before** starting the threads, and does not advance it during the round. In the model, the effect of time becomes a field of the initial state (for example, `expired: bool`). States created during the round assume the clock did not move. The history needs no time events.
-2. **Time as a history operation (M10).** Each clock advance produces a `tick` event in the history, and the model treats `tick` as a transition. More expressive, more expensive for the checker. Use it only if the test needs time to advance between concurrent operations.
+2. **Time as a history operation (M10).** Each clock advance produces a `tick` event in the history (see [History](HISTORY.md#time)), and the model treats `tick` as a transition: `Op` gets a tick variant, and `step` updates the time-dependent fields for it (for example, aging an entry). The result `step` returns for a tick is ignored. More expressive, more expensive for the checker. Use it only if the test needs time to advance between concurrent operations.
 
 ## Example models
 
@@ -217,7 +217,7 @@ Rules of the pattern:
 1. **Do not record the compound call as one operation.** A `call(f)` that asks for permission, runs `f` and reports the outcome is not atomic: other threads act in between. Record **two** operations, each with its own `invoke`/`return`. The user's work (`f`) stays out of the history.
 2. **The permit goes into the result and, if the object distinguishes it, into the state.** If `report` only makes sense for whoever received a specific kind of permit (for example, the half-open probe call), the result of `acquire` states the kind, and `report` takes that kind as an argument.
 3. **The invariant you care about must be in `step`.** "At most one probe call", "never more than N borrowed": if the model does not refuse, the checker accepts the violation.
-4. **Time-driven transitions follow [Time](#time).** With the clock fixed for the round, the effect of time is a field of the initial state. Advancing during the round requires `tick` (M10).
+4. **Time-driven transitions follow [Time](#time).** With the clock fixed for the round, the effect of time is a field of the initial state. Advancing during the round uses `tick` (M10).
 5. **Getting stuck is not a violation.** An object that never gives the permit back or never leaves a state is a liveness problem. Use a timeout in the result or a watchdog, as in [`EventFlag`](#eventflag-and-lost-wakeup).
 
 ### CircuitBreaker

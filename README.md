@@ -12,6 +12,8 @@
 > - a concurrent `Recorder` with `--threads:on`: per-thread buffers, no locks while recording, merged in `snapshot` (M7);
 > - the `BoundedQueue` example model used by tests (part of M8 groundwork).
 >
+> **On `master`, not yet confirmed by CI:** time as an event (`tick`, M10) and `checkPartitioned` (M11). Both pass the full test suite locally (Linux, Nim 2.2.4, orc/arc, threads on/off), including agreement with the brute-force oracle on 10,000 random histories with ticks.
+>
 > **Does not exist yet:** the end-to-end example (M8), the `CircuitBreaker` model, and a release on the nimble index (M9). A milestone is checked in the [Roadmap](#roadmap) only after CI confirms it.
 
 A Nim library, **stdlib only**, that checks whether a history of concurrent operations is **linearizable**: is there a valid sequential order of the operations that explains exactly the observed results?

@@ -79,7 +79,17 @@ Typical example: a call cancelled or interrupted by the test's timeout. If the t
 This applies to objects whose behavior depends on the clock (timeouts, cache TTL, rate limiters). The object under test must accept an injectable fake clock; the checker does not see a real clock. Two cases:
 
 1. **Time fixed for the round.** The test advances the clock before the threads start and does not advance it during the round. No time event goes into the history. Recommended for first use.
-2. **Time as an event (M10, planned).** Each clock advance records a `tick` event with a `seq`. The model treats `tick` as a transition. Needed only when the advance happens between concurrent operations.
+2. **Time as an event (M10).** Each clock advance records a `tick` event with a `seq`. The model treats `tick` as a transition. Needed only when the advance happens between concurrent operations.
+
+A tick is a single event (`ekTick`), not an `invoke`/`return` pair. The checker linearizes it exactly at its `seq`: operations that returned before the tick come before it, operations invoked after it come after it, and operations that overlap it may fall on either side. The model's result for a tick is not compared with anything.
+
+```nim
+# thread that drives the fake clock:
+clock.advance(1.seconds)
+discard rec.tick(thread = clockThread, call = CacheOp(kind: cTick))   # right AFTER advancing
+```
+
+Recording rule: call `tick` **after** the clock moved. The tick's `seq` must come after the moment the object can observe the new time; recording it earlier claims that operations invoked between the two already saw the new time. Ticks can also be built by hand with `tickEvent`.
 
 Do not use `getMonoTime()` inside `step` or as an ordering criterion. It breaks determinism.
 
@@ -100,11 +110,11 @@ Fields:
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `kind` | `"invoke"` or `"return"` | yes | |
+| `kind` | `"invoke"`, `"return"` or `"tick"` | yes | `"tick"`: M10; its `payload` is an operation |
 | `op` | integer | yes | operation id; shared by `invoke` and `return` |
 | `thread` | integer | yes | |
 | `seq` | integer | yes | unique in the history, increasing; `seqNo` field in Nim (D-19) |
-| `payload` | object | yes | operation (in `invoke`) or result (in `return`); converted by `toPayload`/`fromPayload` (see [API](API.md#json-tojsonlines-and-parsejsonlines)) |
+| `payload` | object | yes | operation (in `invoke` and `tick`) or result (in `return`); converted by `toPayload`/`fromPayload` (see [API](API.md#json-tojsonlines-and-parsejsonlines)) |
 
 Format rules:
 

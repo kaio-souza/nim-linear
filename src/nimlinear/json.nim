@@ -17,10 +17,13 @@ proc toJsonLines*[Op, Res](h: History[Op, Res]): string =
   mixin toPayload
   for e in h.events:
     let payload = case e.kind
-      of ekInvoke: toPayload(e.call)
+      of ekInvoke, ekTick: toPayload(e.call)
       of ekReturn: toPayload(e.res)
     result.add "{\"kind\":"
-    result.add(if e.kind == ekInvoke: "\"invoke\"" else: "\"return\"")
+    result.add(case e.kind
+      of ekInvoke: "\"invoke\""
+      of ekReturn: "\"return\""
+      of ekTick: "\"tick\"")
     result.add ",\"op\":" & $e.op
     result.add ",\"thread\":" & $e.thread
     result.add ",\"seq\":" & $e.seqNo
@@ -64,8 +67,10 @@ proc parseJsonLines*[Op, Res](s: string): History[Op, Res] {.raises: [ValueError
         events.add invokeEvent[Op, Res](op, thread, sq, fromPayload(payload, Op))
       of "return":
         events.add returnEvent[Op, Res](op, thread, sq, fromPayload(payload, Res))
+      of "tick":
+        events.add tickEvent[Op, Res](op, thread, sq, fromPayload(payload, Op))
       else:
-        raise newException(ValueError, "field \"kind\" must be \"invoke\" or \"return\"")
+        raise newException(ValueError, "field \"kind\" must be \"invoke\", \"return\" or \"tick\"")
     except CatchableError as err:
       raise newException(ValueError, "line " & $lineNo & ": " & err.msg)
   newHistory(events)

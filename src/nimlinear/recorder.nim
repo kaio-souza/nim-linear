@@ -55,6 +55,20 @@ proc finish*[Op, Res](r: var Recorder[Op, Res], id: OpId, res: Res) {.raises: []
   r.bufs[thread].events.add Event[Op, Res](op: id, thread: ThreadId(thread),
                                           seqNo: SeqNo(s), kind: ekReturn, res: res)
 
+proc tick*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.raises: [].} =
+  ## Records an instantaneous `tick` (M10), e.g. a fake-clock advance. Call it
+  ## right after advancing the clock, from the thread that advanced it.
+  let s = r.counter.fetchAdd(1) + 1
+  if thread < 0 or thread >= r.bufs.len:
+    r.misuse.store(true)
+    return OpId(0)
+  let k = r.bufs[thread].nextLocal
+  inc r.bufs[thread].nextLocal
+  let id = OpId(k * r.bufs.len + thread + 1)
+  r.bufs[thread].events.add Event[Op, Res](op: id, thread: ThreadId(thread),
+                                          seqNo: SeqNo(s), kind: ekTick, call: call)
+  id
+
 proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [ArgumentError].} =
   ## Merges all thread buffers by `seq`. Call only after all threads joined.
   if r.misuse.load:

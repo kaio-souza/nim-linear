@@ -11,14 +11,16 @@ type
   ThreadId* = distinct int  ## originating thread
   SeqNo* = distinct int     ## global sequence number of the event (D-03, D-19)
 
-  EventKind* = enum ekInvoke, ekReturn
+  EventKind* = enum ekInvoke, ekReturn, ekTick
+    ## `ekTick` is an instantaneous operation (M10): one event, no `return`,
+    ## linearized exactly at its `seq`. Used for clock advances.
 
   Event*[Op, Res] = object
     op*: OpId
     thread*: ThreadId
     seqNo*: SeqNo                 ## called `seq` in prose and in JSON (D-19)
     case kind*: EventKind
-    of ekInvoke: call*: Op
+    of ekInvoke, ekTick: call*: Op
     of ekReturn: res*: Res
 
   History*[Op, Res] = object
@@ -43,11 +45,15 @@ proc returnEvent*[Op, Res](op, thread, seqNo: int, res: Res): Event[Op, Res] =
   Event[Op, Res](op: OpId(op), thread: ThreadId(thread), seqNo: SeqNo(seqNo),
                  kind: ekReturn, res: res)
 
+proc tickEvent*[Op, Res](op, thread, seqNo: int, call: Op): Event[Op, Res] =
+  Event[Op, Res](op: OpId(op), thread: ThreadId(thread), seqNo: SeqNo(seqNo),
+                 kind: ekTick, call: call)
+
 proc `==`*[Op, Res](a, b: Event[Op, Res]): bool =
   if a.kind != b.kind or a.op != b.op or a.thread != b.thread or a.seqNo != b.seqNo:
     return false
   case a.kind
-  of ekInvoke: a.call == b.call
+  of ekInvoke, ekTick: a.call == b.call
   of ekReturn: a.res == b.res
 
 proc newHistory*[Op, Res](events: seq[Event[Op, Res]]): History[Op, Res] {.raises: [ArgumentError].} =
@@ -57,12 +63,17 @@ proc newHistory*[Op, Res](events: seq[Event[Op, Res]]): History[Op, Res] {.raise
   var invoked = initTable[OpId, ThreadId]()  # op -> thread of the invoke
   var returned = initTable[OpId, bool]()
   var open = initTable[ThreadId, OpId]()     # thread -> open op
+  var ticks = initTable[OpId, bool]()
   for i, e in evs:
     if i > 0 and evs[i - 1].seqNo == e.seqNo:
       raise newException(ArgumentError, "seq " & $e.seqNo & " repeated")
     case e.kind
+    of ekTick:
+      if e.op in invoked or e.op in ticks:
+        raise newException(ArgumentError, "op " & $e.op & " is used by more than one invoke or tick")
+      ticks[e.op] = true
     of ekInvoke:
-      if e.op in invoked:
+      if e.op in invoked or e.op in ticks:
         raise newException(ArgumentError, "op " & $e.op & " has more than one invoke")
       if e.thread in open:
         raise newException(ArgumentError, "thread " & $e.thread & " invokes op " & $e.op &
@@ -70,6 +81,8 @@ proc newHistory*[Op, Res](events: seq[Event[Op, Res]]): History[Op, Res] {.raise
       invoked[e.op] = e.thread
       open[e.thread] = e.op
     of ekReturn:
+      if e.op in ticks:
+        raise newException(ArgumentError, "return of op " & $e.op & ", which is a tick")
       if e.op notin invoked:
         raise newException(ArgumentError, "return of op " & $e.op & " without a previous invoke")
       if e.op in returned:

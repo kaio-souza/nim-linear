@@ -74,9 +74,9 @@ Status: **Proposed** (not implemented yet) or **Accepted**.
 
 - **Status:** Proposed
 - **Context:** objects with timeouts or TTLs depend on the clock. The checker does not see a clock advance that is not in the history.
-- **Choice:** the recommended path is to advance a fake clock before the round's threads and keep it fixed during the round; the effect of time becomes a field of the model's initial state. Time as an event (`tick`) is left for M10.
+- **Choice:** the recommended path is to advance a fake clock before the round's threads and keep it fixed during the round; the effect of time becomes a field of the model's initial state. Time as an event (`tick`) is the alternative, implemented in M10 (D-22).
 - **Reason:** it is the simplest path that covers most races in time-dependent objects.
-- **Consequence:** it does not cover time transitions that happen in the middle of concurrent operations. That is a known limit until M10.
+- **Consequence:** it does not cover time transitions that happen in the middle of concurrent operations; tests that need them use `tick` (D-22).
 
 ## D-10: no integration with property-based testing libraries
 
@@ -96,7 +96,7 @@ Status: **Proposed** (not implemented yet) or **Accepted**.
 
 ## D-12: partitioning only when the specification is P-compositional
 
-- **Status:** Proposed
+- **Status:** Accepted (implemented in M11)
 - **Context:** Horn & Kroening (arXiv 1504.00204, Definition 6 and Theorem 1) show that a history can be split into independent sub-histories when the specification is P-compositional. With partitioning by key, WGL+P was about an order of magnitude faster and used an order of magnitude less memory than plain WGL. Porcupine exposes this as `Partition`.
 - **Choice:** the API provides an optional `partition` in the model, with the obligation to document the validity condition. The library does not check the condition; whoever writes the model is responsible for it.
 - **Reason:** it is the largest measured source of speedup in the literature. The contract has to be written down to avoid false verdicts.
@@ -175,3 +175,11 @@ Status: **Proposed** (not implemented yet) or **Accepted**.
 - **Choice:** milestones are units of work on `master`. Releases bundle useful sets of changes, after 7 days without API or format changes, with at least 7 days between them. The exception is a fix for a wrong verdict. Rules in the [README](../README.md#release-policy).
 - **Reason:** users should not have to follow versions that change nothing for them. The stabilization period balances the speed of writing with time in real use.
 - **Consequence:** the roadmap does not reserve version numbers. `CHANGELOG.md` accumulates `## Unreleased` until the next release.
+
+## D-22: a tick is its own event kind
+
+- **Status:** Accepted (implemented in M10)
+- **Context:** a clock advance could be recorded as an ordinary operation (an `invoke`/`return` pair with consecutive `seq`), with no format change. But then the test must supply a result for the tick, the tick occupies its thread like any operation, and nothing says it is instantaneous.
+- **Choice:** a third event kind, `ekTick` (`"tick"` in JSON): one event, one `seq`, no `return`, result not compared, does not open its thread. Internally the checker places it in the interval `[2*seq, 2*seq + 1]` so it is ordered strictly against every other event. `checkPartitioned` copies ticks into every part.
+- **Reason:** says what a tick is in the format itself; removes the meaningless result and the thread constraint.
+- **Consequence:** the JSON format gained a value for `kind`. That is a format change (D-05); it lands before the first release, so no published file is affected. Readers that only know `"invoke"`/`"return"` reject files with ticks.
