@@ -43,4 +43,4 @@ First release. Everything below is new in 0.1.0; no earlier version was publishe
 - `examples/quickstart.nim` (the README quickstart, checked by `tests/treadme.nim`), `examples/queue_race.nim` (M8), `examples/queue_perturb.nim`, `examples/queue_pct.nim`.
 - Brute-force oracle with random histories (pending operations, ticks, `outcomes`), 10 000 histories per model (M6).
 - Benchmark suite with a Porcupine comparison and a regression `--check` (M23); results in `docs/MEASUREMENTS.md`.
-- One runner for `nimble test`/`examples`/`bench` and CI (`tools/run.nims`); CI on Linux, macOS, Windows × Nim 2.2.4, 2.4.0 × orc/arc × threads on/off × debug/release, plus Nim 2.2.0 on Linux; release workflow on `vX.Y.Z` tags.
+- One runner for `nimble test`/`examples`/`bench` and CI (`tools/run.nims`); CI on Linux, macOS, Windows × Nim 2.2.4, 2.4.0 × orc/arc × threads on/off × debug/release, plus Nim 2.2.0 on Linux; no release workflow.

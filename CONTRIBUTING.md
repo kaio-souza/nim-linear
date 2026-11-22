@@ -95,14 +95,14 @@ Short messages in the imperative mood. A change to the saved format (D-05) never
 A milestone (M0, M1…) is a unit of work, not a version (see [Releasing](#releasing)). A box is checked only after the CI matrix confirms it. What each milestone delivered is in [`CHANGELOG.md`](CHANGELOG.md).
 
 - [x] **M0–M8. Core**: project and CI, history types and JSON Lines, checker with memoized graph search, pending operations, budget, diagnostics, brute-force oracle, concurrent recorder, end-to-end example.
-- [ ] **M9. First release** (0.1.0): the release workflow has to publish it (see [Releasing](#releasing)).
+- [ ] **M9. First release** (0.1.0): not published yet (see [Releasing](#releasing)).
 - [x] **M10–M13. Optional features**: time as an event (`tick`), `checkPartitioned`, perturbation points, PCT scheduler.
 - [x] **M14–M24. Refinement** after comparing with Porcupine, Knossos and Lincheck ([`docs/COMPARISON.md`](docs/COMPARISON.md)): nondeterministic specifications (`outcomes`), format version line, `shrink`, `runRounds`, timeline (text and HTML), `SchedLock`, wall-clock timeout, generic partition key, linear-time search, benchmark suite with a CI check, private `History` fields.
 
 
 ## Releasing
 
-A milestone is not a reason to release. A release bundles a set of changes that makes sense to users. Releases are made by pushing a `vX.Y.Z` tag; `.github/workflows/release.yml` checks it and publishes the GitHub release.
+A milestone is not a reason to release. A release bundles a set of changes that makes sense to users. Releases are marked by a `vX.Y.Z` tag. There is no automated release workflow.
 
 Policy:
 
@@ -117,6 +117,6 @@ Steps:
 1. Pick the number `X.Y.Z` (SemVer `0.x.y`: an API or format break bumps `x`).
 2. Set it in `nimlinear.nimble` (`version`) and `src/nimlinear.nim` (`nimlinearVersion`); `tests/tsmoke.nim` checks they match.
 3. In `CHANGELOG.md`, rename `## Unreleased` to `## X.Y.Z` and add a new empty `## Unreleased` above it.
-4. Commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag must point at the commit that has the version set in step 2: the workflow fails otherwise.
-5. `.github/workflows/release.yml` checks the tag against both versions and the changelog, runs the tests and examples, and publishes the GitHub release with the changelog section as notes.
+4. Commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag must point at the commit that has the version set in step 2.
+5. Publish the GitHub release by hand with the changelog section as notes.
 6. First release only: open a pull request to [nim-lang/packages](https://github.com/nim-lang/packages) adding `nimlinear` (later versions are picked up from the tags).
