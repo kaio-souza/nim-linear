@@ -330,7 +330,11 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc
     # unpartitioned one. Expensive; for small histories while validating a
     # `partition` (D-12). A disagreement means the partition is not valid.
     template verified(v: Verdict[Op, Res]): Verdict[Op, Res] =
-      let whole = checkLinearizable(h, init, model, budget, timeout)
+      # Same deadline as the partitioned check (what is left of `timeout`),
+      # so the cross-check does not double the time limit.
+      var wn = 0
+      var wt = false
+      let whole = checkCore(h, init, model, budget, deadline, use, wn, wt)
       if v.kind != vkInconclusive and whole.kind != vkInconclusive and v.kind != whole.kind:
         raiseAssert "nimlinearVerifyPartition: checkPartitioned says " & $v.kind &
                     " but checkLinearizable says " & $whole.kind &

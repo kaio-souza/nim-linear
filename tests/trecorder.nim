@@ -18,7 +18,7 @@ else:
     id: OpId
 
   proc finisher(c: FinCtx) {.thread.} =
-    c.rec[].finish(c.id, RegRes(ok: true))   # wrong thread: misuse
+    c.rec[].finish(c.id, RegRes(ok: true))   # another OS thread: allowed
 
   proc worker(c: Ctx) {.thread.} =
     for i in 0 ..< 3:
@@ -107,11 +107,12 @@ else:
       check h.events.len == 1
       check h.events[0].kind == ekInvoke
 
-    test "finish from a thread that did not begin is misuse (no write)":
+    test "finish on another OS thread is fine (async task migration)":
       var rec = newRecorder[RegOp, RegRes](threads = 2)
       let id = rec.begin(0, read())
       var th: Thread[FinCtx]
       createThread(th, finisher, FinCtx(rec: addr rec, id: id))
       joinThread(th)
-      expect ArgumentError:
-        discard rec.snapshot()
+      let h = rec.snapshot()
+      check h.events.len == 2
+      check h.events[1].kind == ekReturn

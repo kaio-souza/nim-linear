@@ -28,7 +28,7 @@ when not compileOption("threads"):
 when not defined(nimlinearPerturb):
   {.error: "nimlinear/schedule requires -d:nimlinearPerturb".}
 
-import std/[locks, random]
+import std/[atomics, locks, random]
 import ./perturb
 
 type
@@ -51,7 +51,9 @@ type
     lock: Lock
     held: bool            # under the scheduler (one thread runs at a time)
 
-var gSched: ptr Scheduler
+var gSched: Atomic[pointer]   # the active Scheduler, or nil
+
+template active(): ptr Scheduler = cast[ptr Scheduler](gSched.load(moAcquire))
 var tTid {.threadvar.}: int
 
 proc runnable(s: Scheduler, t: int): bool =
@@ -73,7 +75,7 @@ proc pickNext(s: var Scheduler): int =
 
 proc switchPoint() {.nimcall, gcsafe, raises: [].} =
   {.cast(gcsafe).}:
-    let s = gSched
+    let s = active()
     if s == nil: return
     acquire s.lock
     inc s.step
@@ -93,7 +95,8 @@ proc initScheduler*(s: var Scheduler, threads: Positive, seed: int, depth = 3,
   ## number of scheduling points in the round, where change points are drawn.
   ## Raises `ValueError` if another scheduler is still installed (call
   ## `deinitScheduler` first): only one can be active at a time.
-  if gSched != nil:
+  var none: pointer = nil
+  if not gSched.compareExchange(none, cast[pointer](addr s), moSequentiallyConsistent):
     raise newException(ValueError, "nimlinear/schedule: another Scheduler is active; " &
       "call deinitScheduler on it first")
   initLock s.lock
@@ -112,13 +115,12 @@ proc initScheduler*(s: var Scheduler, threads: Positive, seed: int, depth = 3,
   s.prio = p
   s.changeAt = @[]
   for _ in 1 ..< depth: s.changeAt.add rng.rand(1 .. max(1, steps))
-  gSched = addr s
   setYieldHook(switchPoint)
 
 proc deinitScheduler*(s: var Scheduler) =
   ## Removes the scheduler. Call after joining the threads.
   setYieldHook(nil)
-  gSched = nil
+  gSched.store(nil, moRelease)
   deinitCond s.cond
   deinitLock s.lock
 
@@ -153,7 +155,7 @@ proc acquire*(l: var SchedLock) {.raises: [].} =
   ## Under a scheduler: a switch point; if the lock is held, the thread waits
   ## (yielding) until it is released. Otherwise: an ordinary lock acquire.
   {.cast(gcsafe).}:
-    let s = gSched
+    let s = active()
     if s == nil:
       acquire l.lock
       return
@@ -170,7 +172,7 @@ proc acquire*(l: var SchedLock) {.raises: [].} =
 
 proc release*(l: var SchedLock) {.raises: [].} =
   {.cast(gcsafe).}:
-    if gSched == nil:
+    if active() == nil:
       release l.lock
     else:
       l.held = false

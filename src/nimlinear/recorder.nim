@@ -16,27 +16,25 @@ import ./history
 type
   Buf[Op, Res] = object
     events: seq[Event[Op, Res]]
-    nextLocal: int   # per-thread op counter; only touched by its own thread
+    nextLocal: int     # per-index op counter
+    busy: Atomic[bool] # set while a call writes this buffer
 
   Recorder*[Op, Res] = object
     counter: Atomic[int]
     bufs: seq[Buf[Op, Res]]
     misuse: Atomic[bool]   # a begin/finish with an invalid thread or id
 
-# Which thread index this OS thread used, per recorder. A `finish` from a
-# thread that did not `begin` the operation would write into another
-# thread's buffer concurrently (a data race), so it is refused as misuse.
-var tUsed {.threadvar.}: seq[(pointer, int)]
-
-proc noteThread(r: pointer, thread: int) =
-  for x in tUsed:
-    if x[0] == r and x[1] == thread: return
-  tUsed.add (r, thread)
-
-proc usedBy(r: pointer, thread: int): bool =
-  for x in tUsed:
-    if x[0] == r and x[1] == thread: return true
-  false
+# A buffer belongs to a logical index, not to an OS thread: an async task may
+# `begin` on one OS thread and `finish` on another. What must never happen is
+# two calls writing the same buffer at the same time (two OS threads sharing
+# an index). `busy` detects exactly that: the second writer finds the flag
+# set, records misuse and does not write.
+template writeBuf(r, thread, ev: untyped) =
+  if r.bufs[thread].busy.exchange(true, moAcquire):
+    r.misuse.store(true)       # concurrent use of one index: refuse to write
+  else:
+    r.bufs[thread].events.add ev
+    r.bufs[thread].busy.store(false, moRelease)
 
 proc `=copy`*[Op, Res](dest: var Recorder[Op, Res], src: Recorder[Op, Res]) {.error.}
 
@@ -51,28 +49,29 @@ proc begin*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.ra
   if thread < 0 or thread >= r.bufs.len:
     r.misuse.store(true)
     return OpId(0)
-  noteThread(addr r, thread)
+  if r.bufs[thread].busy.exchange(true, moAcquire):
+    r.misuse.store(true)
+    return OpId(0)
   let k = r.bufs[thread].nextLocal
   inc r.bufs[thread].nextLocal
   let id = OpId(k * r.bufs.len + thread + 1)
   r.bufs[thread].events.add Event[Op, Res](op: id, thread: ThreadId(thread),
                                           seqNo: SeqNo(s), kind: ekInvoke, call: call)
+  r.bufs[thread].busy.store(false, moRelease)
   id
 
 proc finish*[Op, Res](r: var Recorder[Op, Res], id: OpId, res: Res) {.raises: [].} =
   ## Takes the return `seq` after the operation. Call after receiving the
-  ## result, from the same thread that called `begin`.
+  ## result. It may run on another OS thread than `begin` (async tasks that
+  ## migrate), as long as no other call uses the same index at the same time.
   let s = r.counter.fetchAdd(1) + 1
   if int(id) < 1:
     r.misuse.store(true)
     return
   let thread = (int(id) - 1) mod r.bufs.len
-  if not usedBy(addr r, thread):
-    r.misuse.store(true)       # finish from a thread that did not begin it
-    return
   # Unknown or duplicate ids are recorded as-is; newHistory rejects them.
-  r.bufs[thread].events.add Event[Op, Res](op: id, thread: ThreadId(thread),
-                                          seqNo: SeqNo(s), kind: ekReturn, res: res)
+  writeBuf(r, thread, Event[Op, Res](op: id, thread: ThreadId(thread),
+                                     seqNo: SeqNo(s), kind: ekReturn, res: res))
 
 proc tick*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.raises: [].} =
   ## Records an instantaneous `tick` (M10), e.g. a fake-clock advance. Call it
@@ -81,12 +80,15 @@ proc tick*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.rai
   if thread < 0 or thread >= r.bufs.len:
     r.misuse.store(true)
     return OpId(0)
-  noteThread(addr r, thread)
+  if r.bufs[thread].busy.exchange(true, moAcquire):
+    r.misuse.store(true)
+    return OpId(0)
   let k = r.bufs[thread].nextLocal
   inc r.bufs[thread].nextLocal
   let id = OpId(k * r.bufs.len + thread + 1)
   r.bufs[thread].events.add Event[Op, Res](op: id, thread: ThreadId(thread),
                                           seqNo: SeqNo(s), kind: ekTick, call: call)
+  r.bufs[thread].busy.store(false, moRelease)
   id
 
 template record*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op,
@@ -108,7 +110,7 @@ proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [A
   ## Merges all thread buffers by `seq`. Call only after all threads joined.
   if r.misuse.load:
     raise newException(ArgumentError, "recorder misuse: thread index out of range, invalid OpId, " &
-      "or finish called from a thread that did not begin the operation")
+      "or one index used by two threads at the same time")
   var all: seq[Event[Op, Res]]
   for b in r.bufs:
     all.add b.events
