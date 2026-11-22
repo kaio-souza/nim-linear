@@ -8,3 +8,6 @@ examples/*
 *.exe
 tests/*/*
 !tests/*/*.*
+!tests/*/*/
+tests/*/*/*
+!tests/*/*/*.*

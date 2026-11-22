@@ -11,10 +11,17 @@
 ## recorded history, byte for byte.
 ##
 ## Rules (otherwise the round can hang):
-## - between `enter` and `leave`, a thread must not block waiting for another
-##   registered thread: no `perturb()` while holding a lock others may take,
-##   no joins, no blocking channel reads;
+## - between `enter` and `leave`, a thread must not block in the OS waiting
+##   for another registered thread: no joins, no blocking channel reads, and
+##   no `perturb()` while holding a plain `Lock` others may take. Use
+##   `SchedLock` (below) for locks inside the object under test: waiting for
+##   it yields to the scheduler, so `perturb()` inside critical sections is
+##   safe and bugs there can be found (M19);
 ## - one scheduler active at a time.
+##
+## Switches happen only at the points listed above: `perturb()`, `enter`,
+## `leave` and `SchedLock.acquire`. Code between two points runs atomically
+## under the scheduler, so a bug whose window has no point is not explored.
 
 when not compileOption("threads"):
   {.error: "nimlinear/schedule requires --threads:on".}
@@ -35,14 +42,34 @@ type
     prio: seq[int]
     changeAt: seq[int]    # step numbers where the running thread is demoted
     step: int
+    waitingOn: seq[ptr SchedLock]   # lock each thread waits for (nil: runnable)
+    deadlocked*: bool     ## every unfinished thread waited on a held SchedLock
+
+  SchedLock* = object
+    ## Lock that cooperates with the scheduler. Without an active scheduler it
+    ## is an ordinary `Lock`.
+    lock: Lock
+    held: bool            # under the scheduler (one thread runs at a time)
 
 var gSched: ptr Scheduler
 var tTid {.threadvar.}: int
 
+proc runnable(s: Scheduler, t: int): bool =
+  not s.done[t] and (s.waitingOn[t] == nil or not s.waitingOn[t].held)
+
 proc pickNext(s: var Scheduler): int =
   result = -1
   for t in 0 ..< s.n:
-    if not s.done[t] and (result == -1 or s.prio[t] > s.prio[result]): result = t
+    if s.runnable(t) and (result == -1 or s.prio[t] > s.prio[result]): result = t
+  if result == -1:
+    # Nobody can run: either all done, or a real deadlock in the code under
+    # test. In the second case, flag it and wake the highest-priority waiter
+    # so the round ends; its acquire then proceeds without the lock.
+    for t in 0 ..< s.n:
+      if not s.done[t] and (result == -1 or s.prio[t] > s.prio[result]): result = t
+    if result != -1:
+      s.deadlocked = true
+      s.waitingOn[result] = nil
 
 proc switchPoint() {.nimcall, gcsafe, raises: [].} =
   {.cast(gcsafe).}:
@@ -71,6 +98,8 @@ proc initScheduler*(s: var Scheduler, threads: Positive, seed: int, depth = 3,
   s.current = -1
   s.step = 0
   s.done = newSeq[bool](threads)
+  s.waitingOn = newSeq[ptr SchedLock](threads)
+  s.deadlocked = false
   var rng = initRand(seed + 1)
   var p = newSeq[int](threads)
   for t in 0 ..< threads: p[t] = depth + t
@@ -107,3 +136,43 @@ proc leave*(s: var Scheduler) {.raises: [].} =
   s.current = s.pickNext
   broadcast s.cond
   release s.lock
+
+proc initSchedLock*(l: var SchedLock) =
+  initLock l.lock
+  l.held = false
+
+proc deinitSchedLock*(l: var SchedLock) =
+  deinitLock l.lock
+
+proc acquire*(l: var SchedLock) {.raises: [].} =
+  ## Under a scheduler: a switch point; if the lock is held, the thread waits
+  ## (yielding) until it is released. Otherwise: an ordinary lock acquire.
+  {.cast(gcsafe).}:
+    let s = gSched
+    if s == nil:
+      acquire l.lock
+      return
+    switchPoint()
+    if l.held:
+      acquire s.lock
+      s.waitingOn[tTid] = addr l
+      release s.lock
+      switchPoint()          # picked again only when `l` is free (or deadlock)
+      acquire s.lock
+      s.waitingOn[tTid] = nil
+      release s.lock
+    l.held = true
+
+proc release*(l: var SchedLock) {.raises: [].} =
+  {.cast(gcsafe).}:
+    if gSched == nil:
+      release l.lock
+    else:
+      l.held = false
+
+template withLock*(l: var SchedLock, body: untyped) =
+  acquire(l)
+  try:
+    body
+  finally:
+    release(l)

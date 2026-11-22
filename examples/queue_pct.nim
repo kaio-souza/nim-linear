@@ -12,6 +12,7 @@
 when not compileOption("threads"):
   {.error: "this example needs --threads:on".}
 
+import std/os
 import nimlinear
 import nimlinear/schedule
 import ./common/queue
@@ -26,9 +27,16 @@ proc leaveHook() {.nimcall, gcsafe, raises: [].} =
   {.cast(gcsafe).}: sched.leave()
 
 proc scheduledRound(buggy: bool, seed: int): History[QueueOp, QueueRes] =
-  sched.initScheduler(threads, seed, depth = 3, steps = 40)
-  result = runRound(buggy, wNarrow, Hooks(enter: enterHook, leave: leaveHook))
+  ## One round per seed: the operations come from the seed too.
+  mode = (buggy: buggy, window: wNarrow)
+  let cfg = config(1, seed, "queue_pct")
+  sched.initScheduler(cfg.threads, seed, depth = 3, steps = 40)
+  result = runRound(cfg, 1, setup, genOp, exec, teardown,
+                    ThreadHooks(enter: enterHook, leave: leaveHook))
   sched.deinitScheduler()
+
+proc check(h: History[QueueOp, QueueRes]): Verdict[QueueOp, QueueRes] =
+  checkLinearizable(h, initState, QueueModel, budget = 500_000)
 
 proc main(): int =
   for seed in [1, 7, 42]:
@@ -52,7 +60,8 @@ proc main(): int =
     if v.kind == vkNotLinearizable:
       echo "buggy queue: rejected with seed ", seed, " (budget ", budget, ")"
       echo v.report
-      echo "history saved to ", h.save("queue_pct_failure.jsonl")
+      writeFile(getTempDir() / "queue_pct_failure.jsonl", h.toJsonLines())
+      echo "history saved to ", getTempDir() / "queue_pct_failure.jsonl"
       return 0
   echo "buggy queue: bug not found within ", budget, " seeds"
   1

@@ -46,3 +46,11 @@ suite "newHistory":
     rejects @[inv(1, 0, 1), inv(2, 0, 2)]
   test "a pending op blocks its thread":
     rejects @[inv(1, 0, 1), inv(2, 0, 5), ret(2, 0, 6)]
+
+suite "History is read-only (M24)":
+  test "events cannot be assigned or mutated from outside":
+    var h = newHistory[int, int](@[invokeEvent[int, int](1, 0, 1, 5)])
+    check h.events.len == 1
+    check not compiles(h.events = @[])
+    check not compiles(h.events.add invokeEvent[int, int](2, 1, 2, 6))
+    check not compiles(History[int, int](evs: @[]))

@@ -1,6 +1,6 @@
 ## M11: checkPartitioned. Hand-written cases plus agreement with
 ## checkLinearizable and the brute-force oracle on random histories.
-import std/[random, unittest]
+import std/[hashes, random, unittest]
 import nimlinear
 import nimlinear/models/register
 import ./oracle/[oracle, kvttl]
@@ -81,3 +81,45 @@ suite "checkPartitioned vs oracle":
       if want == vkLinearizable: inc lin else: inc notLin
     check lin > 1000
     check notLin > 1000
+
+# M21: any key type with hash, == and <.
+type
+  SOp = object
+    key: string
+    write: bool
+    value: int
+  SRes = object
+    value: int
+  SState = object
+    vals: seq[(string, int)]
+  SModel = object
+
+func hash(s: SState): Hash = hash(s.vals)
+func lookup(s: SState, k: string): int =
+  for (kk, v) in s.vals:
+    if kk == k: return v
+func step(m: typedesc[SModel], s: SState, op: SOp): Expected[SState, SRes] {.raises: [].} =
+  if op.write:
+    var n = SState()
+    for (kk, v) in s.vals:
+      if kk != op.key: n.vals.add (kk, v)
+    n.vals.add (op.key, op.value)
+    Expected[SState, SRes](next: n, res: SRes())
+  else:
+    Expected[SState, SRes](next: s, res: SRes(value: s.lookup(op.key)))
+func partition(m: typedesc[SModel], op: SOp): string {.raises: [].} = op.key
+
+suite "checkPartitioned: generic key (M21)":
+  test "string keys, parts in increasing key order":
+    type E = Event[SOp, SRes]
+    proc o(id, inv, ret: int, call: SOp, res = SRes()): seq[E] =
+      @[invokeEvent[SOp, SRes](id, 0, inv, call), returnEvent[SOp, SRes](id, 0, ret, res)]
+    let evs = o(1, 1, 2, SOp(key: "zeta", write: true, value: 5)) &
+              o(2, 3, 4, SOp(key: "alpha", write: true, value: 7)) &
+              o(3, 5, 6, SOp(key: "zeta"), SRes(value: 5)) &
+              o(4, 7, 8, SOp(key: "alpha"), SRes(value: 7))
+    let v = checkPartitioned(newHistory(evs), SState(), SModel)
+    check v.kind == vkLinearizable
+    check ids(v.order) == @[2, 4, 1, 3]
+    let bad = o(1, 1, 2, SOp(key: "k", write: true, value: 5)) & o(2, 3, 4, SOp(key: "k"), SRes(value: 0))
+    check checkPartitioned(newHistory(bad), SState(), SModel).kind == vkNotLinearizable

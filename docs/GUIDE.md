@@ -107,6 +107,10 @@ Rules:
 - `vkInconclusive` **fails** the test. If it shows up, shrink the round before raising the budget.
 - On failure, save the history (see [History](HISTORY.md#saving-a-failed-history)).
 
+### Shortcut: `runRounds`
+
+Steps 3 and 5 can be written with the round harness (M17): give it `setup`, an operation generator and an executor, and it runs the rounds, checks each one, shrinks and saves the first failing history, and `describe` prints it with a timeline. See [API](API.md#round-harness-m17) and [`examples/queue_race.nim`](../examples/queue_race.nim).
+
 ## Step 4: time
 
 If the object depends on a clock, inject a fake clock and follow [Time](MODELS.md#time): advance it before the threads, never inside them.

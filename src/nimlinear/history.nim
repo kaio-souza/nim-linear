@@ -24,7 +24,10 @@ type
     of ekReturn: res*: Res
 
   History*[Op, Res] = object
-    events*: seq[Event[Op, Res]]  ## ordered by seq
+    ## Built only by `newHistory` (validated) or `newHistoryUnchecked`, so a
+    ## `History` value always went through one of them (M24). Read the events
+    ## with `events`.
+    evs: seq[Event[Op, Res]]      # ordered by seq
 
 template defineId(T: typedesc) =
   proc `==`*(a, b: T): bool {.borrow.}
@@ -55,6 +58,17 @@ proc `==`*[Op, Res](a, b: Event[Op, Res]): bool =
   case a.kind
   of ekInvoke, ekTick: a.call == b.call
   of ekReturn: a.res == b.res
+
+func events*[Op, Res](h: History[Op, Res]): lent seq[Event[Op, Res]] {.inline.} =
+  ## The events, ordered by `seq`. Read-only.
+  h.evs
+
+func newHistoryUnchecked*[Op, Res](events: seq[Event[Op, Res]]): History[Op, Res] =
+  ## No validation and no sorting. Only for events taken from a valid history
+  ## (a subset of its operations, or several valid parts merged and sorted by
+  ## `seq`), as `shrink` and `checkPartitioned` do. Anything else can make
+  ## the checker's verdict meaningless.
+  History[Op, Res](evs: events)
 
 proc newHistory*[Op, Res](events: seq[Event[Op, Res]]): History[Op, Res] {.raises: [ArgumentError].} =
   ## Checks the invariants in docs/API.md#history and sorts by seq.
@@ -91,4 +105,4 @@ proc newHistory*[Op, Res](events: seq[Event[Op, Res]]): History[Op, Res] {.raise
         raise newException(ArgumentError, "return of op " & $e.op & " on a different thread than its invoke")
       returned[e.op] = true
       open.del(e.thread)
-  History[Op, Res](events: evs)
+  History[Op, Res](evs: evs)

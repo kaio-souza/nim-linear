@@ -31,6 +31,41 @@ The initial state is not part of the model: it is passed to `checkLinearizable(h
 
 The planned `Model` concept (see [API](API.md#model)) is meant to check the contract at compile time; today only the `{.raises: [].}` part is enforced.
 
+### Nondeterministic specifications: `outcomes` (M14)
+
+`step` gives **one** expected result. Some specifications allow several: a bag whose `take` may return any item, a weak CAS that may fail spuriously, a `wait` that may time out early. For those, define `outcomes` instead of `step`:
+
+```nim
+func outcomes(m: typedesc[MyModel], s: MyState, op: MyOp): seq[Expected[MyState, MyRes]] {.raises: [].}
+```
+
+It lists **every** allowed `(next state, result)` pair. The checker:
+
+- for a completed operation, tries the outcomes whose result equals the observed one (in the order listed, D-20);
+- for a pending operation, tries every outcome (and also "not applied");
+- for a tick, tries every outcome; the result is ignored.
+
+If no outcome matches, the first one is reported as `expected` in the witness. An empty list means "this operation cannot happen in this state" (`why: "no outcome"`). When a model defines both, `outcomes` wins. Bag example, with the state kept sorted so that equal bags compare equal:
+
+```nim
+func outcomes(m: typedesc[BagModel], s: BagState, op: BagOp): seq[Expected[BagState, BagRes]] {.raises: [].} =
+  case op.kind
+  of bPut:
+    var n = s
+    n.items.insert(op.value, n.items.lowerBound(op.value))
+    result = @[Expected[BagState, BagRes](next: n, res: BagRes())]
+  of bTake:
+    if s.items.len == 0:
+      return @[Expected[BagState, BagRes](next: s, res: BagRes(value: -1), why: "bag empty")]
+    for k, v in s.items:
+      if k > 0 and s.items[k - 1] == v: continue     # equal items: one outcome
+      var n = s
+      n.items.delete(k)
+      result.add Expected[BagState, BagRes](next: n, res: BagRes(value: v))
+```
+
+Keep the list small and free of duplicates: every outcome is a branch of the search. Infinite choices (any fresh id) do not fit; restrict them in the test (ids from a small pool). If `outcomes` does not compile, the checker falls back to `step` and fails with a message that names both, so check the error carefully. Tested models: `tests/oracle/ndmodels.nim`.
+
 ## Writing a model, step by step
 
 1. **List the public operations** of the data structure. One line per operation, with arguments and return value.
@@ -279,7 +314,7 @@ Bugs this model rejects: two `pkProbe` permits granted with no `report` between 
 
 ## Checklist before trusting a new model
 
-- [ ] `step` is a `func` and `{.raises: [].}`, with no `ref` in the state.
+- [ ] `step` (or `outcomes`) is a `func` and `{.raises: [].}`, with no `ref` in the state.
 - [ ] `hash` and `==` cover every state field, including constants.
 - [ ] Hand-written cases pass (step 4).
 - [ ] The model agrees with the implementation in sequence, without threads (step 5).

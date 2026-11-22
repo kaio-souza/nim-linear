@@ -183,3 +183,27 @@ Status: **Proposed** (not implemented yet) or **Accepted**.
 - **Choice:** a third event kind, `ekTick` (`"tick"` in JSON): one event, one `seq`, no `return`, result not compared, does not open its thread. Internally the checker places it in the interval `[2*seq, 2*seq + 1]` so it is ordered strictly against every other event. `checkPartitioned` copies ticks into every part.
 - **Reason:** says what a tick is in the format itself; removes the meaningless result and the thread constraint.
 - **Consequence:** the JSON format gained a value for `kind`. That is a format change (D-05); it lands before the first release, so no published file is affected. Readers that only know `"invoke"`/`"return"` reject files with ticks.
+
+## D-23: nondeterministic specifications through `outcomes`, format version line
+
+- **Status:** Accepted (implemented in M14 and M15)
+- **Context:** `step` returns one expected result, so specifications with several allowed results (bag `take`, weak CAS, early timeout) could not be modeled. Porcupine and Knossos instead give the model the observed result. Separately, the saved format had no version, and M10 already changed it.
+- **Choice:** an optional `outcomes(m, s, op): seq[Expected[S, Res]]` that lists every allowed `(next, res)`; the checker branches over those matching the observation (or all of them, for a pending operation). This was preferred over an "accepts the observed result" contract because a pending operation has no observed result: with `outcomes` the checker can still branch over its possible effects. The JSON Lines format gains a first line `{"nimlinear":1}`; files without it still parse.
+- **Reason:** covers the nondeterministic cases without changing `step` models; makes format changes detectable before the first release.
+- **Consequence:** each outcome is a branch, so long outcome lists make the search more expensive. Choices from an infinite set cannot be listed and must be restricted by the test.
+
+## D-24: shrinking keeps the stuck operation and its expected result
+
+- **Status:** Accepted (implemented in M16)
+- **Context:** removing operations from a failing history can create a failure that was not there (remove the only `write(1)` and a `read() -> 1` becomes unexplainable), and the shrunk history would then point at the wrong bug. Lincheck avoids this by re-running the real code on the smaller scenario; nimlinear only has the history.
+- **Choice:** greedy removal (threads, then operations) that keeps a candidate only if it is still `vkNotLinearizable`, stuck on the same operation, with the same expected result for it; the stuck operation is never removed.
+- **Reason:** cheap, deterministic, and rejects the common artificial failures.
+- **Consequence:** it is a heuristic: the shrunk history can still omit context that helps understand the bug. Reports should keep pointing at the original history (`runRounds` keeps both).
+
+## D-25: search key `(f, window)` instead of the full bitset
+
+- **Status:** Accepted (implemented in M22)
+- **Context:** storing the full linearized bitset per visited configuration, recomputing `minRet` by a full scan and restarting the candidate scan from 0 made the search quadratic on long histories with bounded overlap (measured: 20 000 operations in 1.26 s, 4x the time of 10 000).
+- **Choice:** the memo key is `(f, window, state)`: every operation below index `f` is linearized, `f` is not, and `window` is a bitset of the operations after `f`. `minRet` is kept incrementally over operations sorted by return, and the candidate scan starts at `f`.
+- **Reason:** with bounded overlap the window is one or two words, so each step costs O(overlap).
+- **Consequence:** linear on long histories (40 000 operations in about 20 ms). A pending operation that is never linearized keeps `f` from advancing, so many pending operations in a long history grow the window: cost about quadratic in their number (benchmark shape E). Fully overlapping histories (shapes A, B) stay exponential, as for every checker of this kind.

@@ -61,7 +61,7 @@ suite "JSON Lines":
       returnEvent[RegOp, RegRes](1, 0, 3, RegRes()),
       returnEvent[RegOp, RegRes](2, 1, 4, RegRes(value: 5))])
     let s = h.toJsonLines()
-    check s.splitLines()[0] ==
+    check s.splitLines()[1] ==
       """{"kind":"invoke","op":1,"thread":0,"seq":1,"payload":{"write":true,"value":5}}"""
     let back = parseJsonLines[RegOp, RegRes](s)
     check back.events == h.events
@@ -83,3 +83,24 @@ suite "JSON Lines":
     let dup = """{"kind":"return","op":1,"thread":0,"seq":1,"payload":{"value":0}}""" & "\n"
     expect ArgumentError:
       discard parseJsonLines[RegOp, RegRes](dup)
+
+suite "JSON Lines: format version (M15)":
+  let body = "{\"kind\":\"invoke\",\"op\":1,\"thread\":0,\"seq\":1,\"payload\":{\"write\":false,\"value\":0}}\n"
+
+  test "the version line is written first":
+    let h = parseJsonLines[RegOp, RegRes](body)
+    check h.toJsonLines() == "{\"nimlinear\":1}\n" & body
+
+  test "files without the version line still parse":
+    check parseJsonLines[RegOp, RegRes](body).events.len == 1
+
+  test "an unknown version is rejected with a clear message":
+    try:
+      discard parseJsonLines[RegOp, RegRes]("{\"nimlinear\":2}\n" & body)
+      check false
+    except ValueError as e:
+      check "unsupported format version 2" in e.msg
+
+  test "the version line only on the first line":
+    expect ValueError:
+      discard parseJsonLines[RegOp, RegRes](body & "{\"nimlinear\":1}\n")

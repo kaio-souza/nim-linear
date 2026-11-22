@@ -1,3 +1,4 @@
+{"nimlinear":1}
 {"kind":"invoke","op":1,"thread":0,"seq":1,"payload":{"kind":"write","value":1}}
 {"kind":"invoke","op":2,"thread":1,"seq":2,"payload":{"kind":"read"}}
 {"kind":"return","op":2,"thread":1,"seq":3,"payload":{"value":1,"ok":true}}

@@ -1,0 +1,17 @@
+not linearizable
+prefix: 2 1 9 3
+stuck: op 4
+call: read()
+result: (value: 7, ok: true)
+alternatives:
+  - op 4: expected (value: 5, ok: true), observed (value: 7, ok: true)
+timeline:
+  thread 0  [==]  []
+  thread 1   []  [=>
+  ticks         |
+operations:
+  op 1 (thread 0, seq 1-4): write(1) -> (value: 0, ok: true)  [prefix #2]
+  op 2 (thread 1, seq 2-3): read() -> (value: 0, ok: true)  [prefix #1]
+  op 9 (tick, seq 5): read()  [prefix #3]
+  op 3 (thread 1, seq 6-): write(5) -> pending  [prefix #4]
+  op 4 (thread 0, seq 7-8): read() -> (value: 7, ok: true)  [STUCK]

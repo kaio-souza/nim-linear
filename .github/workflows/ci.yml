@@ -16,7 +16,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}, nim ${{ matrix.nim }}, ${{ matrix.mm }}, threads=${{ matrix.threads }}, ${{ matrix.mode }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -42,10 +42,30 @@ jobs:
           unzip -q nim.zip -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nim-${{ matrix.nim }}/bin" >> "$GITHUB_PATH"
 
-      - name: Install Nim (macOS)
+      # No official macOS binary: build the exact version from the release
+      # source tarball (it ships the generated C sources), and cache it.
+      - name: Cache Nim (macOS)
         if: runner.os == 'macOS'
-        # TODO: pin the macOS binary like Linux/Windows once the exact asset URL is confirmed.
-        run: brew install nim
+        id: nim-cache-macos
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nim-${{ matrix.nim }}
+          key: nim-macos-${{ runner.arch }}-${{ matrix.nim }}
+
+      - name: Build Nim (macOS, from source)
+        if: runner.os == 'macOS' && steps.nim-cache-macos.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL "https://nim-lang.org/download/nim-${{ matrix.nim }}.tar.xz" | tar xJ -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/nim-${{ matrix.nim }}"
+          sh build.sh            # compiles bin/nim from the shipped C sources
+
+      - name: Add Nim to PATH (macOS)
+        if: runner.os == 'macOS'
+        run: echo "$RUNNER_TEMP/nim-${{ matrix.nim }}/bin" >> "$GITHUB_PATH"
+
+      - name: Check Nim version matches the matrix
+        shell: bash
+        run: nim --version | head -1 | grep -F "Version ${{ matrix.nim }}"
 
       - name: Check Nim version
         run: nim --version
@@ -82,3 +102,16 @@ jobs:
           for f in examples/*.nim; do
             nim c -r --hints:off "$f"
           done
+
+  bench:
+    name: bench regression check (ubuntu-latest, nim 2.2.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nim
+        run: |
+          curl -sSfL "https://nim-lang.org/download/nim-2.2.4-linux_x64.tar.xz" | tar xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nim-2.2.4/bin" >> "$GITHUB_PATH"
+      - name: Run benchmarks with --check
+        run: nim c -r -d:release --mm:orc --hints:off tests/measure/bench.nim --check

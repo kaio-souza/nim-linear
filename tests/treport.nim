@@ -55,3 +55,35 @@ suite "report":
     let r = checkLinearizable(h, RegState(), RegisterModel).report
     for _ in 0 ..< 5:
       check checkLinearizable(h, RegState(), RegisterModel).report == r
+
+suite "timeline (M18)":
+  test "not linearizable, with a pending op and a tick: snapshot":
+    let evs = op(1, 0, 1, 4, write(1), ok()) & op(2, 1, 2, 3, read(), ok(0)) &
+              @[tickEvent[RegOp, RegRes](9, 2, 5, read())] &
+              @[invokeEvent[RegOp, RegRes](3, 1, 6, write(5))] &
+              op(4, 0, 7, 8, read(), ok(7))
+    let h = newHistory(evs)
+    let v = checkLinearizable(h, RegState(), RegisterModel)
+    golden("register_timeline.txt", report(v, h))
+
+  test "linearizable: roles are positions in the order":
+    let h = newHistory(op(1, 0, 1, 4, write(1), ok()) & op(2, 1, 2, 3, read(), ok(1)))
+    let t = timeline(h, checkLinearizable(h, RegState(), RegisterModel))
+    check "op 1 (thread 0, seq 1-4): write(1) -> (value: 0, ok: true)  [#1]" in t
+    check "op 2 (thread 1, seq 2-3): read() -> (value: 1, ok: true)  [#2]" in t
+
+  test "large histories skip the drawing":
+    var evs: seq[Ev]
+    for i in 1 .. 250: evs.add op(i, 0, 2 * i - 1, 2 * i, write(i), ok())
+    let h = newHistory(evs)
+    let t = timeline(h, checkLinearizable(h, RegState(), RegisterModel))
+    check "drawing omitted" in t
+    check "op 250 " in t
+
+  test "HTML is standalone":
+    let h = newHistory(op(1, 0, 1, 2, write(1), ok()) & op(2, 0, 3, 4, read(), ok(0)))
+    let html = timelineHtml(h, checkLinearizable(h, RegState(), RegisterModel))
+    check html.startsWith("<!doctype html>")
+    check "<svg" in html
+    check "http://" notin html.replace("http://www.w3.org/2000/svg", "")
+    check "STUCK" in html

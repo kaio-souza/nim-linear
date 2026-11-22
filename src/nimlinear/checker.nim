@@ -1,7 +1,14 @@
-## Linearizability checker (M2–M4, M10, M11): graph search memoizing
-## (linearized, state) configurations, D-11. Deterministic (D-20).
+## Linearizability checker (M2–M4, M10, M11, M14, M20–M22): graph search
+## memoizing (linearized, state) configurations, D-11. Deterministic (D-20).
+##
+## Internals (M22): operations are indexed in increasing invoke `seq`. The
+## linearized set is kept as a global bitset for tests, and as the canonical
+## key `(f, window)` for memoization: every index below `f` is linearized,
+## index `f` is not, and bit `j` of `window` says whether index `f + 1 + j` is.
+## With bounded overlap the window stays a word or two, so each step costs
+## O(overlap), not O(n).
 
-import std/[algorithm, hashes, sets, tables]
+import std/[algorithm, hashes, monotimes, sets, tables, times]
 import ./history
 
 type
@@ -9,7 +16,7 @@ type
 
   Alternative*[Res] = object
     candidate*: OpId     ## operation tried as the next linearization point
-    expected*: Res       ## result the model expected
+    expected*: Res       ## result the model expected (first outcome, M14)
     observed*: Res       ## result recorded in the history
     why*: string         ## reason from the model
 
@@ -29,80 +36,134 @@ type
     of vkInconclusive:
       statesExplored*: int
       budget*: int
+      timedOut*: bool    ## true: stopped by `timeout` (M20), not by `budget`
 
   OpInfo[Op, Res] = object
     id: OpId
-    invSeq, retSeq: int    # retSeq = high(int) for a pending op
+    invSeq, retSeq: int    # internal times; retSeq = high(int) for a pending op
     pending: bool
-    tick: bool             # instantaneous (M10): invSeq == retSeq, result not compared
+    tick: bool             # instantaneous (M10): result not compared
     call: Op
     res: Res
 
   Config[S] = object
-    bits: seq[uint64]
+    f: int
+    window: seq[uint64]
     state: S
 
   Frame[S, Res] = object
     state: S
-    cand: int              # next candidate to try (index into ops)
+    f: int                 # every index < f is linearized
+    window: seq[uint64]    # bit j: index f + 1 + j linearized; no trailing zero words
     minRet: int            # lowest retSeq among completed, unlinearized ops
+    minRetPos: int         # position of that op in `byRet`
+    cand: int              # next candidate index to try
+    cur: int               # candidate whose outcomes are being tried (-1: none)
+    nexts: seq[S]          # next states still to try for `cur`
     alts: seq[Alternative[Res]]
 
 proc hash[S](c: Config[S]): Hash =
   mixin hash
-  var h: Hash = 0
-  for w in c.bits: h = h !& hash(w)
+  var h: Hash = hash(c.f)
+  for w in c.window: h = h !& hash(w)
   h = h !& hash(c.state)
   !$h
 
 proc `==`[S](a, b: Config[S]): bool =
   mixin `==`
-  a.bits == b.bits and a.state == b.state
+  a.f == b.f and a.window == b.window and a.state == b.state
 
 template isSet(bits: seq[uint64], i: int): bool = (bits[i shr 6] and (1'u64 shl (i and 63))) != 0
 template setBit(bits: var seq[uint64], i: int) = bits[i shr 6] = bits[i shr 6] or (1'u64 shl (i and 63))
 template clearBit(bits: var seq[uint64], i: int) = bits[i shr 6] = bits[i shr 6] and not (1'u64 shl (i and 63))
 
-proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
-                           budget: int, explored: var int): Verdict[Op, Res] {.raises: [].} =
-  mixin step, `==`, hash
+proc childKey(f: var int, window: var seq[uint64], i: int) =
+  ## Adds index `i` (not yet linearized, `i >= f`) to the key `(f, window)`.
+  if i > f:
+    let b = i - f - 1
+    while window.len <= b shr 6: window.add 0'u64
+    window[b shr 6] = window[b shr 6] or (1'u64 shl (b and 63))
+    return
+  # i == f: the new first unlinearized index skips the run of ones at bit 0.
+  var t = 0
+  while t shr 6 < window.len and (window[t shr 6] and (1'u64 shl (t and 63))) != 0: inc t
+  f += t + 1
+  let sh = t + 1                   # drop the run and the zero bit after it
+  let words = sh shr 6
+  let bitsSh = sh and 63
+  var res = newSeq[uint64](max(0, window.len - words))
+  for k in 0 ..< res.len:
+    var w = window[k + words] shr bitsSh
+    if bitsSh != 0 and k + words + 1 < window.len:
+      w = w or (window[k + words + 1] shl (64 - bitsSh))
+    res[k] = w
+  while res.len > 0 and res[^1] == 0: res.setLen res.len - 1
+  window = res
 
-  # Operations in increasing invoke seq (h.events is already sorted).
+template hasOutcomes*(model: typedesc, S, Op: typedesc): bool {.dirty.} =
+  ## True when the model defines the nondeterministic contract (M14).
+  compiles(outcomes(model, default(S), default(Op)))
+
+proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
+                           budget: int, deadline: MonoTime, useDeadline: bool,
+                           explored: var int, timedOut: var bool): Verdict[Op, Res] {.raises: [].} =
+  mixin step, outcomes, `==`, hash
+  timedOut = false
+
   # Internal times are 2*seq; a tick occupies [2*seq, 2*seq + 1], so it is a
   # candidate exactly when nothing that returned earlier is still unlinearized.
   var ops: seq[OpInfo[Op, Res]]
+  var indexOf = initTable[OpId, int]()
   for e in h.events:
     case e.kind
     of ekInvoke:
+      indexOf[e.op] = ops.len
       ops.add OpInfo[Op, Res](id: e.op, invSeq: 2 * int(e.seqNo), retSeq: high(int),
                               pending: true, call: e.call)
     of ekTick:
       ops.add OpInfo[Op, Res](id: e.op, invSeq: 2 * int(e.seqNo), retSeq: 2 * int(e.seqNo) + 1,
                               tick: true, call: e.call)
-    of ekReturn: discard
-  for e in h.events:
-    if e.kind == ekReturn:
-      for o in ops.mitems:
-        if o.id == e.op:
-          o.retSeq = 2 * int(e.seqNo); o.pending = false; o.res = e.res
-          break
+    of ekReturn:
+      let i = indexOf.getOrDefault(e.op, -1)
+      if i >= 0:
+        ops[i].retSeq = 2 * int(e.seqNo); ops[i].pending = false; ops[i].res = e.res
   let n = ops.len
 
-  var bits = newSeq[uint64]((n + 63) div 64)
-  var completedLeft = 0
-  for o in ops:
-    if not o.pending: inc completedLeft
+  # Completed ops (and ticks) in increasing retSeq, for an incremental minRet.
+  var byRet: seq[int]
+  for i in 0 ..< n:
+    if not ops[i].pending: byRet.add i
+  byRet.sort(proc (a, b: int): int = cmp(ops[a].retSeq, ops[b].retSeq))
 
-  proc minRetOf(bits: seq[uint64]): int =
-    result = high(int)
-    for i in 0 ..< n:
-      if not bits.isSet(i) and ops[i].retSeq < result: result = ops[i].retSeq
+  var bits = newSeq[uint64]((n + 63) div 64)
+  var completedLeft = byRet.len
+
+  proc nextMin(bits: seq[uint64], fromPos: int): (int, int) =
+    var p = fromPos
+    while p < byRet.len and bits.isSet(byRet[p]): inc p
+    if p < byRet.len: (ops[byRet[p]].retSeq, p) else: (high(int), p)
 
   var visited = initHashSet[Config[S]]()
-  visited.incl Config[S](bits: bits, state: init)
+  visited.incl Config[S](f: 0, state: init)
   explored = 1
   var path: seq[int]
-  var stack = @[Frame[S, Res](state: init, cand: 0, minRet: minRetOf(bits))]
+  var stack: seq[Frame[S, Res]]
+  var depth = 0                 # frames in use; stack keeps capacity (reused)
+  template pushFrame(st: S, ff: int, ex: seq[uint64], mr, mrp: int) =
+    if depth == stack.len: stack.add Frame[S, Res]()
+    stack[depth].state = st
+    stack[depth].f = ff
+    stack[depth].window = ex
+    stack[depth].minRet = mr
+    stack[depth].minRetPos = mrp
+    stack[depth].cand = ff
+    stack[depth].cur = -1
+    stack[depth].nexts.setLen 0
+    stack[depth].alts.setLen 0
+    inc depth
+  block:
+    let (mr, mrp) = nextMin(bits, 0)
+    pushFrame(init, 0, @[], mr, mrp)
   var bestLen = -1
   var best: Witness[Op, Res]
 
@@ -113,82 +174,132 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
       if (explored and 1023) == 0:
         let m = getOccupiedMem()
         if m > peakMem: peakMem = m
+    template report() =
+      debugEcho "nimlinearMeasure peakDelta=", max(peakMem, getOccupiedMem()) - baseMem, " explored=", explored
+  else:
+    template report() = discard
 
   while true:
     if completedLeft == 0:
-      when defined(nimlinearMeasure):
-        debugEcho "nimlinearMeasure peakDelta=", max(peakMem, getOccupiedMem()) - baseMem, " explored=", explored
+      report()
       var order: seq[OpId]
       for i in path: order.add ops[i].id
       return Verdict[Op, Res](kind: vkLinearizable, order: order)
-    if stack.len == 0: break
+    if depth == 0: break
 
-    let top = stack.high
-    var i = stack[top].cand
-    while i < n and (bits.isSet(i)) and ops[i].invSeq < stack[top].minRet: inc i
-    if i >= n or ops[i].invSeq >= stack[top].minRet:
-      # No candidates left: this configuration fails.
-      if path.len > bestLen:
-        bestLen = path.len
-        best.prefix.setLen 0
-        for j in path: best.prefix.add ops[j].id
-        best.alternatives = stack[top].alts
-        if best.alternatives.len > 0:
-          let s = best.alternatives[0].candidate
-          for o in ops:
-            if o.id == s:
-              best.stuck = o.id; best.stuckCall = o.call; best.stuckRes = o.res
-              break
-      stack.setLen top
-      if path.len > 0:
-        let j = path.pop
-        bits.clearBit(j)
-        if not ops[j].pending: inc completedLeft
-      continue
+    let top = depth - 1
+    # Pick the next state to try: from the current candidate's outcomes, or
+    # from the next candidate.
+    if stack[top].nexts.len == 0:
+      var i = stack[top].cand
+      while i < n and bits.isSet(i) and ops[i].invSeq < stack[top].minRet: inc i
+      if i >= n or ops[i].invSeq >= stack[top].minRet:
+        # No candidates left: this configuration fails.
+        if path.len > bestLen:
+          bestLen = path.len
+          best.prefix.setLen 0
+          for j in path: best.prefix.add ops[j].id
+          best.alternatives = stack[top].alts
+          if best.alternatives.len > 0:
+            let s = indexOf.getOrDefault(best.alternatives[0].candidate, -1)
+            if s >= 0:
+              best.stuck = ops[s].id; best.stuckCall = ops[s].call; best.stuckRes = ops[s].res
+        dec depth
+        if path.len > 0:
+          let j = path.pop
+          bits.clearBit(j)
+          if not ops[j].pending: inc completedLeft
+        continue
+      stack[top].cand = i + 1
+      stack[top].cur = i
+      let check = not ops[i].pending and not ops[i].tick
+      when hasOutcomes(model, S, Op):
+        let outs = outcomes(model, stack[top].state, ops[i].call)
+        for e in outs:
+          if not check or e.res == ops[i].res: stack[top].nexts.add e.next
+        if stack[top].nexts.len == 0:
+          var alt = Alternative[Res](candidate: ops[i].id, observed: ops[i].res)
+          if outs.len > 0:
+            alt.expected = outs[0].res; alt.why = outs[0].why
+          else:
+            alt.why = "no outcome"
+          stack[top].alts.add alt
+          continue
+      else:
+        when not compiles(step(model, stack[top].state, ops[i].call)):
+          {.error: "the model needs `step` or `outcomes` (docs/MODELS.md#contract); " &
+                   "if it defines `outcomes`, that definition does not compile".}
+        let e = step(model, stack[top].state, ops[i].call)
+        if check and not (e.res == ops[i].res):
+          stack[top].alts.add Alternative[Res](candidate: ops[i].id, expected: e.res,
+                                               observed: ops[i].res, why: e.why)
+          continue
+        stack[top].nexts.add e.next
+      # Outcomes are tried in the model's order (D-20); pop from the back.
+      stack[top].nexts.reverse()
 
-    stack[top].cand = i + 1
-    let e = step(model, stack[top].state, ops[i].call)
-    if not ops[i].pending and not ops[i].tick and not (e.res == ops[i].res):
-      stack[top].alts.add Alternative[Res](candidate: ops[i].id, expected: e.res,
-                                           observed: ops[i].res, why: e.why)
-      continue
+    let i = stack[top].cur
+    let next = stack[top].nexts.pop()
 
-    bits.setBit(i)
-    let cfg = Config[S](bits: bits, state: e.next)
+    # Child key after linearizing i.
+    var f = stack[top].f
+    var window = stack[top].window
+    childKey(f, window, i)
+
+    let cfg = Config[S](f: f, window: window, state: next)
     if cfg in visited:
-      bits.clearBit(i)
       continue
     if explored >= budget:
-      when defined(nimlinearMeasure):
-        debugEcho "nimlinearMeasure peakDelta=", max(peakMem, getOccupiedMem()) - baseMem, " explored=", explored
+      report()
       return Verdict[Op, Res](kind: vkInconclusive, statesExplored: explored, budget: budget)
+    if useDeadline and (explored and 255) == 0 and not (getMonoTime() < deadline):
+      report()
+      timedOut = true
+      return Verdict[Op, Res](kind: vkInconclusive, statesExplored: explored, budget: budget,
+                              timedOut: true)
     visited.incl cfg
     inc explored
     when defined(nimlinearMeasure):
       sampleMem()
+    bits.setBit(i)
     path.add i
-    if not ops[i].pending: dec completedLeft
-    stack.add Frame[S, Res](state: e.next, cand: 0, minRet: minRetOf(bits))
+    var mr = stack[top].minRet
+    var mrp = stack[top].minRetPos
+    if not ops[i].pending:
+      dec completedLeft
+      if ops[i].retSeq == mr:
+        (mr, mrp) = nextMin(bits, mrp)
+    pushFrame(next, f, window, mr, mrp)
 
-  when defined(nimlinearMeasure):
-    debugEcho "nimlinearMeasure peakDelta=", max(peakMem, getOccupiedMem()) - baseMem, " explored=", explored
+  report()
   Verdict[Op, Res](kind: vkNotLinearizable, witness: best)
 
+proc deadlineOf(timeout: Duration): (MonoTime, bool) =
+  if timeout > DurationZero: (getMonoTime() + timeout, true) else: (MonoTime(), false)
+
 proc checkLinearizable*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
-                                    budget = 1_000_000): Verdict[Op, Res] {.raises: [].} =
+                                    budget = 1_000_000,
+                                    timeout = DurationZero): Verdict[Op, Res] {.raises: [].} =
   ## Looks for a sequential order that respects real time and in which the
   ## model produces the observed results. See docs/API.md#checklinearizable.
+  ## `timeout` (M20): zero means none; when reached, `vkInconclusive` with
+  ## `timedOut = true`. A timeout makes the verdict depend on the machine.
   var explored = 0
-  checkCore(h, init, model, budget, explored)
+  var timedOut = false
+  let (deadline, use) = deadlineOf(timeout)
+  checkCore(h, init, model, budget, deadline, use, explored, timedOut)
 
 proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
-                                   budget = 1_000_000): Verdict[Op, Res] {.raises: [].} =
-  ## Splits the history by `partition(model, op)` and checks each part with
-  ## `checkLinearizable`, in increasing key order (D-12, D-20). Ticks (M10)
-  ## go into every part. See docs/API.md#checkpartitioned.
-  mixin partition
-  var keyOf = initTable[OpId, int]()
-  var parts = initTable[int, seq[Event[Op, Res]]]()
+                                   budget = 1_000_000,
+                                   timeout = DurationZero): Verdict[Op, Res] {.raises: [].} =
+  ## Splits the history by `partition(model, op)` and checks each part, in
+  ## increasing key order (D-12, D-20). The key may be any type with `hash`,
+  ## `==` and `<` (M21). Ticks (M10) go into every part. `budget` applies per
+  ## part; `timeout` to the whole call. See docs/API.md#checkpartitioned.
+  mixin partition, `<`, `==`, hash
+  type K = typeof(partition(model, default(Op)))
+  var keyOf = initTable[OpId, K]()
+  var parts = initTable[K, seq[Event[Op, Res]]]()
   var ticks: seq[Event[Op, Res]]
   var invSeq = initTable[OpId, int]()
   for e in h.events:
@@ -202,15 +313,17 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc
       parts.mgetOrPut(keyOf.getOrDefault(e.op), @[]).add e
     of ekTick:
       ticks.add e
-  var keys: seq[int]
+  var keys: seq[K]
   for k in parts.keys: keys.add k
-  keys.sort()
+  keys.sort(proc (a, b: K): int = (if a < b: -1 elif b < a: 1 else: 0))
   if keys.len == 0 and ticks.len > 0:
-    return checkLinearizable(h, init, model, budget)
+    return checkLinearizable(h, init, model, budget, timeout)
 
+  let (deadline, use) = deadlineOf(timeout)
   var order: seq[OpId]
   var explored = 0
   var inconclusive = false
+  var anyTimedOut = false
   var failed = false
   var witness: Witness[Op, Res]
   var witnessSeq = high(int)
@@ -220,13 +333,17 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc
       evs.add ticks
       evs.sort(proc (a, b: Event[Op, Res]): int = cmp(int(a.seqNo), int(b.seqNo)))
     var n = 0
-    let v = checkCore(History[Op, Res](events: evs), init, model, budget, n)
+    var tOut = false
+    let v = checkCore(newHistoryUnchecked(evs), init, model, budget, deadline, use, n, tOut)
     explored += n
     case v.kind
     of vkLinearizable:
       order.add v.order
     of vkInconclusive:
       inconclusive = true
+      if tOut:
+        anyTimedOut = true
+        break                # the deadline is shared: later parts would time out too
     of vkNotLinearizable:
       let sq = invSeq.getOrDefault(v.witness.stuck, high(int))
       if not failed or sq < witnessSeq:
@@ -236,6 +353,7 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc
   if failed:
     Verdict[Op, Res](kind: vkNotLinearizable, witness: witness)
   elif inconclusive:
-    Verdict[Op, Res](kind: vkInconclusive, statesExplored: explored, budget: budget)
+    Verdict[Op, Res](kind: vkInconclusive, statesExplored: explored, budget: budget,
+                     timedOut: anyTimedOut)
   else:
     Verdict[Op, Res](kind: vkLinearizable, order: order)

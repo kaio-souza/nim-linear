@@ -19,20 +19,21 @@ const
   trials = 10
   cap = 200
 
-proc roundsToFind(): int =
-  for r in 1 .. cap:
-    if check(runRound(buggy = true, window = wNarrow)).kind == vkNotLinearizable:
-      return r
-  cap + 1
+proc roundsToFind(seed: int): int =
+  mode = (buggy: true, window: wNarrow)
+  var cfg = config(cap, seed, "queue_perturb")
+  cfg.shrink = false
+  let r = runRounds(cfg, initState, QueueModel, setup, genOp, exec, teardown)
+  if r.passed: cap + 1 else: r.rounds
 
 proc main(): int =
   var off, on: int
   var offRuns, onRuns: seq[int]
   for seed in 1 .. trials:
     setPerturbation(enabled = false, seed = seed)
-    let a = roundsToFind()
+    let a = roundsToFind(seed)
     setPerturbation(enabled = true, seed = seed)
-    let b = roundsToFind()
+    let b = roundsToFind(seed)
     offRuns.add a; onRuns.add b
     off += a; on += b
   echo "rounds to find the bug (", cap + 1, " = not found in ", cap, "), per seed:"

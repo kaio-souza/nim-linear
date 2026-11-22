@@ -13,8 +13,14 @@ proc fromPayload*[T](n: JsonNode, t: typedesc[T]): T =
   ## Default hook; override it for variant objects.
   n.to(T)
 
+const formatVersion* = 1
+  ## Version of the saved format (M15). Written as the first line,
+  ## `{"nimlinear":1}`; a change to the format increments it (D-05).
+
 proc toJsonLines*[Op, Res](h: History[Op, Res]): string =
+  ## One event per line, after the `{"nimlinear":1}` version line.
   mixin toPayload
+  result = "{\"nimlinear\":" & $formatVersion & "}\n"
   for e in h.events:
     let payload = case e.kind
       of ekInvoke, ekTick: toPayload(e.call)
@@ -53,6 +59,14 @@ proc parseJsonLines*[Op, Res](s: string): History[Op, Res] {.raises: [ValueError
       raise newException(ValueError, "line " & $lineNo & ": malformed JSON: " & err.msg)
     if n.kind != JObject:
       raise newException(ValueError, "line " & $lineNo & ": expected an object")
+    let ver = n.getOrDefault("nimlinear")
+    if not ver.isNil:
+      if i != 0:
+        raise newException(ValueError, "line " & $lineNo & ": the version line must be the first line")
+      if ver.kind != JInt or ver.getInt != formatVersion:
+        raise newException(ValueError, "line 1: unsupported format version " & $ver &
+          " (this nimlinear reads version " & $formatVersion & ")")
+      continue
     let kindNode = n.getOrDefault("kind")
     let payload = n.getOrDefault("payload")
     if payload.isNil:

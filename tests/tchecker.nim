@@ -1,4 +1,4 @@
-import std/[os, unittest]
+import std/[os, times, unittest]
 import nimlinear
 import nimlinear/models/register
 
@@ -114,3 +114,28 @@ suite "checker: budget":
     check v.budget == 3
     check v.statesExplored == 3
     check checkLinearizable(h, RegState(), RegisterModel).kind == vkNotLinearizable
+
+suite "checker: timeout (M20)":
+  test "a short timeout gives vkInconclusive with timedOut":
+    # 20 fully overlapping writes and a read of a value never written: ~2^20
+    # configurations, far more than 50 ms of search.
+    var evs: seq[Ev]
+    for i in 1 .. 20:
+      evs.add invokeEvent[RegOp, RegRes](i, i, i, write(i))
+    for i in 1 .. 20:
+      evs.add returnEvent[RegOp, RegRes](i, i, 20 + i, ok())
+    evs.add op(21, 0, 41, 42, read(), ok(-1))
+    let v = checkLinearizable(newHistory(evs), RegState(), RegisterModel,
+                              budget = high(int), timeout = initDuration(milliseconds = 50))
+    check v.kind == vkInconclusive
+    check v.timedOut
+    check v.statesExplored > 0
+
+  test "no timeout by default; budget exhaustion is not a timeout":
+    var evs: seq[Ev]
+    for t in 0 ..< 4:
+      evs.add op(t + 1, t, t + 1, 100 + t, write(t), ok())
+    evs.add op(9, 0, 200, 201, read(), ok(42))
+    let v = checkLinearizable(newHistory(evs), RegState(), RegisterModel, budget = 3)
+    check v.kind == vkInconclusive
+    check not v.timedOut

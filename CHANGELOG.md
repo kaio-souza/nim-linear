@@ -20,4 +20,15 @@ Format: each finished milestone adds entries under `## Unreleased`. Changes to t
 - M13: optional module `nimlinear/schedule`: `Scheduler` with PCT (random priorities, `depth - 1` change points), one thread running at a time, switching at `perturb()`, `enter` and `leave`. `examples/queue_pct.nim` checks byte-for-byte reproduction for a fixed seed and finds the M8 bug within 50 seeds.
 - `CircuitBreaker` model in `nimlinear/models/circuitbreaker` (with JSON hooks), as specified in `docs/MODELS.md`, plus a `tick` operation for the cool-down (M10). Tests cover the bugs listed in the docs, the cool-down with ticks, and agreement with the oracle on 10,000 random histories.
 - `Recorder.record` template: `begin`, body, `finish`, returning the result; the op stays pending if the body raises. The example queue uses it.
+- M14 (**breaking**, API): nondeterministic specifications through an optional `outcomes(m, s, op): seq[Expected[S, Res]]`; the checker branches over matching outcomes (all of them for pending operations and ticks); `hasOutcomes` template; tested with a bag and a weak-CAS model against the oracle (10,000 histories each). The oracle and generator support `outcomes` (D-23).
+- M15 (**breaking**, format): JSON Lines starts with `{"nimlinear":1}`; files without it still parse; unknown versions are rejected; `formatVersion` constant. Fixtures updated.
+- M16: `shrink` (greedy, deterministic; keeps the stuck operation and its expected result, D-24).
+- M17: `runRounds`/`runRound`/`describe` (`nimlinear/rounds`, `--threads:on`): per-round object, seeded operations, recording, check, shrink and save. The examples use it; `queue_race.nim` went from 54 to about 25 lines.
+- M18: `timeline`, `report(v, h)` and `timelineHtml`; `report` prints `stopped by: timeout` when applicable.
+- M19: `SchedLock` for `nimlinear/schedule` (waiting yields; `perturb()` inside critical sections is safe; `deadlocked` flag).
+- M20 (**breaking**, API): `timeout` for `checkLinearizable` and `checkPartitioned`; `Verdict.timedOut` in `vkInconclusive`.
+- M21: `partition` may return any type with `hash`, `==` and `<`.
+- M22: search key `(f, window)`, incremental `minRet`, candidate scan from `f`, return lookup by table (D-25): long histories are linear (40 000 operations in about 20 ms; 20 000 took 1.26 s before).
+- M23: benchmark suite `tests/measure/bench.nim` (shapes A–E, `--export`, `--check` in a new CI job) and a Porcupine runner in `tests/measure/porcupine` (Go, not in CI); results in `docs/MEASUREMENTS.md`.
+- M24 (**breaking**, API): `History` fields are private (`events` accessor, `newHistoryUnchecked`); async usage documented; macOS CI builds the exact Nim version from source and every job checks the Nim version.
 - Documentation translated to English; files in `docs/` renamed (`API.md`, `DECISIONS.md`, `GUIDE.md`, `HISTORY.md`, `MODELS.md`).

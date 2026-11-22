@@ -33,7 +33,8 @@ suite "tick: history":
   test "JSON round trip":
     let h = newHistory(op(1, 0, 1, 3, put(0, 5)) & @[tk(2, 2)])
     let s = h.toJsonLines()
-    check s == """{"kind":"invoke","op":1,"thread":0,"seq":1,"payload":{"kind":"kPut","key":0,"value":5}}
+    check s == """{"nimlinear":1}
+{"kind":"invoke","op":1,"thread":0,"seq":1,"payload":{"kind":"kPut","key":0,"value":5}}
 {"kind":"tick","op":2,"thread":9,"seq":2,"payload":{"kind":"kTick","key":0,"value":0}}
 {"kind":"return","op":1,"thread":0,"seq":3,"payload":{"value":0}}
 """

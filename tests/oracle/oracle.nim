@@ -21,7 +21,7 @@ type
 
 proc oracleLinearizable*[S, Op, Res](ops: seq[Spec[Op, Res]], init: S,
                                      model: typedesc): bool =
-  mixin step, `==`
+  mixin step, outcomes, `==`
   let n = ops.len
   var used = newSeq[bool](n)
   var completed = 0
@@ -35,11 +35,15 @@ proc oracleLinearizable*[S, Op, Res](ops: seq[Spec[Op, Res]], init: S,
       if not used[i] and not ops[i].pending and ops[i].ret < minRet: minRet = ops[i].ret
     for i in 0 ..< n:
       if used[i] or ops[i].inv > minRet: continue
-      let e = step(model, state, ops[i].call)
-      if not ops[i].pending and not ops[i].tick and not (e.res == ops[i].res): continue
-      used[i] = true
-      if dfs(e.next, if ops[i].pending: left else: left - 1): return true
-      used[i] = false
+      when hasOutcomes(model, S, Op):
+        let outs = outcomes(model, state, ops[i].call)
+      else:
+        let outs = @[step(model, state, ops[i].call)]
+      for e in outs:
+        if not ops[i].pending and not ops[i].tick and not (e.res == ops[i].res): continue
+        used[i] = true
+        if dfs(e.next, if ops[i].pending: left else: left - 1): return true
+        used[i] = false
     false
 
   dfs(init, completed)
@@ -49,7 +53,12 @@ proc generate*[S, Op, Res](rng: var Rand, init: S, model: typedesc,
                            otherRes: proc (r: var Rand, res: Res): Res,
                            maxTicks = 0, tickCall = default(Op)):
                            tuple[h: History[Op, Res], ops: seq[Spec[Op, Res]]] =
-  mixin step
+  mixin step, outcomes
+  template apply(st: S, call: Op): untyped =
+    when hasOutcomes(model, S, Op):
+      (let outs = outcomes(model, st, call); outs[rng.rand(outs.len - 1)])
+    else:
+      step(model, st, call)
   let threads = rng.rand(1..3)
   let total = rng.rand(1..8)
   var queue = newSeq[seq[int]](threads)        # op indices per thread
@@ -74,7 +83,7 @@ proc generate*[S, Op, Res](rng: var Rand, init: S, model: typedesc,
     let t = ready[rng.rand(ready.len - 1)]
     if t == -1:
       dec ticksLeft; inc s
-      state = step(model, state, tickCall).next
+      state = apply(state, tickCall).next
       ops.add Spec[Op, Res](call: tickCall, tick: true, inv: s, ret: s)
       evs.add tickEvent[Op, Res](ops.len, threads, s, tickCall)
       continue
@@ -88,7 +97,7 @@ proc generate*[S, Op, Res](rng: var Rand, init: S, model: typedesc,
       if ops[cur[t]].pending and rng.rand(1) == 0:
         phase[t] = stopped                     # pending, never takes effect
         continue
-      let e = step(model, state, ops[cur[t]].call)
+      let e = apply(state, ops[cur[t]].call)
       state = e.next; ops[cur[t]].res = e.res
       phase[t] = linearized
     of linearized:

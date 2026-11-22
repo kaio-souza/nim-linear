@@ -68,6 +68,10 @@ let got = rec.record(myId, QueueOp(kind: qDequeue)):
 
 If the body raises, `finish` is not called and the operation stays pending.
 
+### Async code
+
+The recorder does not care about OS threads, only about "who is sequential". In async code (`asyncdispatch`, chronos), give each concurrent task its own logical index in `0 ..< threads` and use it as `thread` in `begin`/`finish`/`record`. Call `begin` right before the `await` of the operation and `finish` right after it returns. Each task must be sequential (one open operation at a time), as with threads. The recorder is only available with `--threads:on`, so compile async tests with it even when everything runs on one thread.
+
 ## Pending operations
 
 An operation may have no `return`: the thread died, there was a timeout, or the test ended first. The history accepts that.
@@ -118,12 +122,14 @@ Fields:
 | `seq` | integer | yes | unique in the history, increasing; `seqNo` field in Nim (D-19) |
 | `payload` | object | yes | operation (in `invoke` and `tick`) or result (in `return`); converted by `toPayload`/`fromPayload` (see [API](API.md#json-tojsonlines-and-parsejsonlines)) |
 
+The first line is the format version, `{"nimlinear":1}` (M15). `toJsonLines` always writes it; `parseJsonLines` accepts files without it (written before M15) and rejects an unknown version with a `ValueError` that names it.
+
 Format rules:
 
 - Keys in the order above, no extra spaces, one line per event, ending in `\n`.
 - `LF` line endings, enforced by the repository's `.gitattributes` (`* text=auto eol=lf`).
 - A round trip (read and rewrite) preserves the file byte for byte. This is tested (M1).
-- A format change is a major version change (see [Decisions](DECISIONS.md), D-05).
+- A format change is a major version change and increments the version line (see [Decisions](DECISIONS.md), D-05 and D-23).
 
 ## Saving a failed history
 
@@ -135,12 +141,16 @@ if verdict.kind != vkLinearizable:
   fail()
 ```
 
-Then replay it without rerunning the test:
+`runRounds` (M17) does this for you, after shrinking the history. Then replay it without rerunning the test:
 
 ```nim
 let h = parseJsonLines[QueueOp, QueueRes](readFile("tests/fixtures/failure-42.jsonl"))
-echo checkLinearizable(h, QueueState(capacity: 4), QueueModel).report
+let v = checkLinearizable(h, QueueState(capacity: 4), QueueModel)
+echo report(v, h)                     # verdict plus timeline (M18)
+writeFile("failure-42.html", timelineHtml(h, v))
 ```
+
+To make it smaller first: `let small = shrink(h, QueueState(capacity: 4), QueueModel)` (M16).
 
 A saved failing history becomes a fixture: it goes into `tests/fixtures/` with the expected verdict in `tests/golden/`.
 

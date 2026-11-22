@@ -14,7 +14,9 @@
 > - time as an event (`tick`, M10), `checkPartitioned` (M11), perturbation points (`nimlinear/perturb`, M12) and the PCT scheduler (`nimlinear/schedule`, M13), each with its example or tests;
 > - the `CircuitBreaker` model, with the cool-down as `tick`.
 >
-> **Known gaps** (review of 2026-11-22, details in [`docs/COMPARISON.md`](docs/COMPARISON.md)): no nondeterministic specifications, no minimization of failing histories, no visualization, and the checker is quadratic on long histories (see [benchmarks](docs/MEASUREMENTS.md#benchmarks)).
+> **On `master`, not yet confirmed by CI:** M14–M24 from the review of 2026-11-22 ([`docs/COMPARISON.md`](docs/COMPARISON.md)): nondeterministic specifications (`outcomes`), a version line in JSON Lines, `shrink`, the `runRounds` harness, a timeline in reports (text and HTML), `SchedLock`, a wall-clock `timeout`, any ordered partition key, a linear-time search on long histories, a benchmark suite with a Porcupine comparison ([benchmarks](docs/MEASUREMENTS.md#benchmarks)), and smaller items. All tests and examples pass locally (Linux, Nim 2.2.4).
+>
+> **Known limits:** many pending operations in a long history make the search grow faster than linearly; `shrink` uses a heuristic guard (D-24); the scheduler switches only at points placed by hand.
 >
 > **Does not exist yet:** a release on the nimble index (M9). A milestone is checked in the [Roadmap](#roadmap) only after CI confirms it.
 

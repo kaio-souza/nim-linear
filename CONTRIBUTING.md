@@ -14,9 +14,11 @@ src/
     history.nim             # Event, History, newHistory (M1)
     json.nim                # toJsonLines, parseJsonLines, toPayload/fromPayload (M1)
     model.nim               # Expected (M2)
-    checker.nim             # checkLinearizable, checkPartitioned (M2–M4, M11)
-    report.nim              # Witness, report (M5)
-    recorder.nim            # Recorder; only with --threads:on (M7)
+    checker.nim             # checkLinearizable, checkPartitioned (M2–M4, M11, M14, M20–M22)
+    report.nim              # report, timeline, timelineHtml (M5, M18)
+    shrink.nim              # shrink (M16)
+    recorder.nim            # Recorder, record; only with --threads:on (M7)
+    rounds.nim              # runRounds; only with --threads:on (M17)
     models/                 # Register, EventFlag, BoundedQueue, CircuitBreaker
     perturb.nim             # optional, M12; not imported by the core
     schedule.nim            # optional, M13; not imported by the core
@@ -27,7 +29,8 @@ tests/
   fixtures/                 # .jsonl histories
   golden/                   # expected report output for each fixture
   oracle/                   # brute-force oracle and history generator (M6)
-  measure/                  # memory measurement harness (M4), not run by CI
+  measure/                  # memory harness (M4); bench.nim (M23, --check runs in CI);
+                            #   porcupine/ (Go, comparison only, not in CI)
 examples/                   # programs that run in CI (M8)
 docs/
   MEASUREMENTS.md           # measured memory and states (M4)
