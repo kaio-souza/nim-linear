@@ -93,3 +93,12 @@ else:
       initSchedLock l
       withLock l: discard
       deinitSchedLock l
+
+    test "a second active scheduler is refused":
+      var a, b: Scheduler
+      a.initScheduler(1, 1)
+      expect ValueError:
+        b.initScheduler(1, 1)
+      a.deinitScheduler()
+      b.initScheduler(1, 1)      # fine once the first is gone
+      b.deinitScheduler()

@@ -27,9 +27,8 @@ proc `==`[Res](a, b: Signature[Res]): bool =
   mixin `==`
   a.fails == b.fails and a.stuck == b.stuck and a.expected == b.expected
 
-proc stuckOf[S, Op, Res](evs: seq[Event[Op, Res]], init: S, model: typedesc,
+proc stuckOf[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
                          budget: int, partitioned: bool): Signature[Res] =
-  let h = newHistoryUnchecked(evs)
   var v: Verdict[Op, Res]
   when compiles(checkPartitioned(h, init, model, budget)):
     if partitioned: v = checkPartitioned(h, init, model, budget)
@@ -43,9 +42,11 @@ proc stuckOf[S, Op, Res](evs: seq[Event[Op, Res]], init: S, model: typedesc,
         result.expected = a.expected
         break
 
-proc without[Op, Res](evs: seq[Event[Op, Res]], drop: HashSet[OpId]): seq[Event[Op, Res]] =
-  for e in evs:
-    if e.op notin drop: result.add e
+proc without[Op, Res](h: History[Op, Res], drop: HashSet[OpId]): History[Op, Res] =
+  var keep = initHashSet[OpId]()
+  for e in h.events:
+    if e.op notin drop: keep.incl e.op
+  h.subHistory(keep)
 
 proc shrink*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
                          budget = 1_000_000, partitioned = false): History[Op, Res] {.raises: [].} =
@@ -53,25 +54,25 @@ proc shrink*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
   ## that is still `vkNotLinearizable` (with `checkPartitioned` when
   ## `partitioned`). If `h` is not `vkNotLinearizable`, returns `h` unchanged.
   ## The same input always gives the same output.
-  var evs = h.events
+  var evs = h
   let sig = stuckOf(evs, init, model, budget, partitioned)
   if not sig.fails: return h
   let stuck = sig.stuck
-  template keeps(cand: seq[Event[Op, Res]]): bool =
-    cand.len < evs.len and stuckOf(cand, init, model, budget, partitioned) == sig
+  template keeps(cand: History[Op, Res]): bool =
+    cand.events.len < evs.events.len and stuckOf(cand, init, model, budget, partitioned) == sig
 
   var progress = true
   while progress:
     progress = false
     # Whole threads first: cheap big steps.
     var threads: seq[int]
-    for e in evs:
+    for e in evs.events:
       if e.kind != ekTick and int(e.thread) notin threads: threads.add int(e.thread)
     threads.sort()
     if threads.len > 1:
       for t in threads:
         var drop = initHashSet[OpId]()
-        for e in evs:
+        for e in evs.events:
           if e.kind != ekTick and int(e.thread) == t: drop.incl e.op
         if stuck in drop: continue
         let cand = evs.without(drop)
@@ -80,7 +81,7 @@ proc shrink*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
           progress = true
     # Then single operations, in increasing invoke seq.
     var opsOrder: seq[OpId]
-    for e in evs:
+    for e in evs.events:
       if e.kind != ekReturn: opsOrder.add e.op
     for id in opsOrder:
       if id == stuck: continue
@@ -90,4 +91,4 @@ proc shrink*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
       if keeps(cand):
         evs = cand
         progress = true
-  newHistoryUnchecked(evs)
+  evs

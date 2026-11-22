@@ -109,6 +109,7 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
                            explored: var int, timedOut: var bool): Verdict[Op, Res] {.raises: [].} =
   mixin step, outcomes, `==`, hash
   timedOut = false
+  let budget = max(budget, 1)    # the initial configuration always counts
 
   # Internal times are 2*seq; a tick occupies [2*seq, 2*seq + 1], so it is a
   # candidate exactly when nothing that returned earlier is still unlinearized.
@@ -121,6 +122,7 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
       ops.add OpInfo[Op, Res](id: e.op, invSeq: 2 * int(e.seqNo), retSeq: high(int),
                               pending: true, call: e.call)
     of ekTick:
+      indexOf[e.op] = ops.len
       ops.add OpInfo[Op, Res](id: e.op, invSeq: 2 * int(e.seqNo), retSeq: 2 * int(e.seqNo) + 1,
                               tick: true, call: e.call)
     of ekReturn:
@@ -200,6 +202,8 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
           best.prefix.setLen 0
           for j in path: best.prefix.add ops[j].id
           best.alternatives = stack[top].alts
+          # Reset first: a stale stuck from a shallower failure must not leak.
+          best.stuck = OpId(0); best.stuckCall = default(Op); best.stuckRes = default(Res)
           if best.alternatives.len > 0:
             let s = indexOf.getOrDefault(best.alternatives[0].candidate, -1)
             if s >= 0:
@@ -218,6 +222,9 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
         for e in outs:
           if not check or e.res == ops[i].res: stack[top].nexts.add e.next
         if stack[top].nexts.len == 0:
+          # A pending op with no outcome simply was not applied: not a
+          # failure, so never an alternative (and never stuck).
+          if ops[i].pending: continue
           var alt = Alternative[Res](candidate: ops[i].id, observed: ops[i].res)
           if outs.len > 0:
             alt.expected = outs[0].res; alt.why = outs[0].why
@@ -282,8 +289,10 @@ proc checkLinearizable*[S, Op, Res](h: History[Op, Res], init: S, model: typedes
                                     timeout = DurationZero): Verdict[Op, Res] {.raises: [].} =
   ## Looks for a sequential order that respects real time and in which the
   ## model produces the observed results. See docs/API.md#checklinearizable.
-  ## `timeout` (M20): zero means none; when reached, `vkInconclusive` with
-  ## `timedOut = true`. A timeout makes the verdict depend on the machine.
+  ## `budget` below 1 is treated as 1. `timeout` (M20): zero means none;
+  ## checked every 256 visited states, so it can be exceeded by up to 256
+  ## steps; when reached, `vkInconclusive` with `timedOut = true`. A timeout
+  ## makes the verdict depend on the machine.
   var explored = 0
   var timedOut = false
   let (deadline, use) = deadlineOf(timeout)
@@ -298,26 +307,37 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc
   ## part; `timeout` to the whole call. See docs/API.md#checkpartitioned.
   mixin partition, `<`, `==`, hash
   type K = typeof(partition(model, default(Op)))
-  var keyOf = initTable[OpId, K]()
-  var parts = initTable[K, seq[Event[Op, Res]]]()
-  var ticks: seq[Event[Op, Res]]
+  var parts = initTable[K, HashSet[OpId]]()
+  var ticks = initHashSet[OpId]()
   var invSeq = initTable[OpId, int]()
   for e in h.events:
     case e.kind
     of ekInvoke:
-      let k = partition(model, e.call)
-      keyOf[e.op] = k
       invSeq[e.op] = int(e.seqNo)
-      parts.mgetOrPut(k, @[]).add e
-    of ekReturn:
-      parts.mgetOrPut(keyOf.getOrDefault(e.op), @[]).add e
+      parts.mgetOrPut(partition(model, e.call), initHashSet[OpId]()).incl e.op
     of ekTick:
-      ticks.add e
+      invSeq[e.op] = int(e.seqNo)
+      ticks.incl e.op
+    of ekReturn: discard
   var keys: seq[K]
   for k in parts.keys: keys.add k
   keys.sort(proc (a, b: K): int = (if a < b: -1 elif b < a: 1 else: 0))
   if keys.len == 0 and ticks.len > 0:
     return checkLinearizable(h, init, model, budget, timeout)
+
+  when defined(nimlinearVerifyPartition):
+    # Safety net for new models: the partitioned verdict must agree with the
+    # unpartitioned one. Expensive; for small histories while validating a
+    # `partition` (D-12). A disagreement means the partition is not valid.
+    template verified(v: Verdict[Op, Res]): Verdict[Op, Res] =
+      let whole = checkLinearizable(h, init, model, budget, timeout)
+      if v.kind != vkInconclusive and whole.kind != vkInconclusive and v.kind != whole.kind:
+        raiseAssert "nimlinearVerifyPartition: checkPartitioned says " & $v.kind &
+                    " but checkLinearizable says " & $whole.kind &
+                    "; the model's `partition` is not valid for this history (D-12)"
+      v
+  else:
+    template verified(v: Verdict[Op, Res]): Verdict[Op, Res] = v
 
   let (deadline, use) = deadlineOf(timeout)
   var order: seq[OpId]
@@ -328,13 +348,10 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc
   var witness: Witness[Op, Res]
   var witnessSeq = high(int)
   for k in keys:
-    var evs = parts.getOrDefault(k)
-    if ticks.len > 0:
-      evs.add ticks
-      evs.sort(proc (a, b: Event[Op, Res]): int = cmp(int(a.seqNo), int(b.seqNo)))
+    let part = h.subHistory(parts.getOrDefault(k) + ticks)
     var n = 0
     var tOut = false
-    let v = checkCore(newHistoryUnchecked(evs), init, model, budget, deadline, use, n, tOut)
+    let v = checkCore(part, init, model, budget, deadline, use, n, tOut)
     explored += n
     case v.kind
     of vkLinearizable:
@@ -351,9 +368,9 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc
         witnessSeq = sq
       failed = true
   if failed:
-    Verdict[Op, Res](kind: vkNotLinearizable, witness: witness)
+    verified(Verdict[Op, Res](kind: vkNotLinearizable, witness: witness))
   elif inconclusive:
-    Verdict[Op, Res](kind: vkInconclusive, statesExplored: explored, budget: budget,
+    Verdict[Op, Res](kind: vkInconclusive, statesExplored: explored, budget: max(budget, 1),
                      timedOut: anyTimedOut)
   else:
-    Verdict[Op, Res](kind: vkLinearizable, order: order)
+    verified(Verdict[Op, Res](kind: vkLinearizable, order: order))

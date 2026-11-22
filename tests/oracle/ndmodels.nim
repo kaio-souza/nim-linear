@@ -68,3 +68,13 @@ func outcomes*(m: typedesc[WeakRegModel], s: WState, op: WOp):
         E(next: s, res: WRes(ok: false), why: "spurious failure")]
     else:
       @[E(next: s, res: WRes(ok: false), why: "cas failed: current value " & $s.value)]
+
+type
+  PickyModel* = object
+    ## Like BagModel, but `take` on an empty bag has NO outcome (it cannot
+    ## happen at all). Used to test pending ops and ticks with empty outcomes.
+
+func outcomes*(m: typedesc[PickyModel], s: BagState, op: BagOp):
+    seq[Expected[BagState, BagRes]] {.raises: [].} =
+  if op.kind == bTake and s.items.len == 0: return @[]
+  outcomes(BagModel, s, op)

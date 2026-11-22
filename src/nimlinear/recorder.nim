@@ -23,6 +23,21 @@ type
     bufs: seq[Buf[Op, Res]]
     misuse: Atomic[bool]   # a begin/finish with an invalid thread or id
 
+# Which thread index this OS thread used, per recorder. A `finish` from a
+# thread that did not `begin` the operation would write into another
+# thread's buffer concurrently (a data race), so it is refused as misuse.
+var tUsed {.threadvar.}: seq[(pointer, int)]
+
+proc noteThread(r: pointer, thread: int) =
+  for x in tUsed:
+    if x[0] == r and x[1] == thread: return
+  tUsed.add (r, thread)
+
+proc usedBy(r: pointer, thread: int): bool =
+  for x in tUsed:
+    if x[0] == r and x[1] == thread: return true
+  false
+
 proc `=copy`*[Op, Res](dest: var Recorder[Op, Res], src: Recorder[Op, Res]) {.error.}
 
 proc newRecorder*[Op, Res](threads: Positive): Recorder[Op, Res] =
@@ -36,6 +51,7 @@ proc begin*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.ra
   if thread < 0 or thread >= r.bufs.len:
     r.misuse.store(true)
     return OpId(0)
+  noteThread(addr r, thread)
   let k = r.bufs[thread].nextLocal
   inc r.bufs[thread].nextLocal
   let id = OpId(k * r.bufs.len + thread + 1)
@@ -51,6 +67,9 @@ proc finish*[Op, Res](r: var Recorder[Op, Res], id: OpId, res: Res) {.raises: []
     r.misuse.store(true)
     return
   let thread = (int(id) - 1) mod r.bufs.len
+  if not usedBy(addr r, thread):
+    r.misuse.store(true)       # finish from a thread that did not begin it
+    return
   # Unknown or duplicate ids are recorded as-is; newHistory rejects them.
   r.bufs[thread].events.add Event[Op, Res](op: id, thread: ThreadId(thread),
                                           seqNo: SeqNo(s), kind: ekReturn, res: res)
@@ -62,6 +81,7 @@ proc tick*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op): OpId {.rai
   if thread < 0 or thread >= r.bufs.len:
     r.misuse.store(true)
     return OpId(0)
+  noteThread(addr r, thread)
   let k = r.bufs[thread].nextLocal
   inc r.bufs[thread].nextLocal
   let id = OpId(k * r.bufs.len + thread + 1)
@@ -87,7 +107,8 @@ template record*[Op, Res](r: var Recorder[Op, Res], thread: int, call: Op,
 proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [ArgumentError].} =
   ## Merges all thread buffers by `seq`. Call only after all threads joined.
   if r.misuse.load:
-    raise newException(ArgumentError, "recorder misuse: thread index out of range or invalid OpId")
+    raise newException(ArgumentError, "recorder misuse: thread index out of range, invalid OpId, " &
+      "or finish called from a thread that did not begin the operation")
   var all: seq[Event[Op, Res]]
   for b in r.bufs:
     all.add b.events

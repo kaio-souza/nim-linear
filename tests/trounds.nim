@@ -72,3 +72,7 @@ else:
         if e.kind == ekInvoke: calls2.add $e.call & "@" & $e.thread
       calls1.sort(); calls2.sort()
       check calls1 == calls2
+
+    test "invalid config raises ValueError":
+      expect ValueError:
+        discard runRounds(RoundsConfig(threads: 0), CState(), CModel, setupCounter, genOp, exec)

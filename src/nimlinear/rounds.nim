@@ -54,6 +54,12 @@ proc worker[Obj, Op, Res](c: Ctx[Obj, Op, Res]) {.thread.} =
     discard c.rec[].record(c.tid, op): c.exec(c.obj, op)
   if c.hooks.leave != nil: c.hooks.leave()
 
+proc validate*(cfg: RoundsConfig) =
+  ## Raises `ValueError` for a config that cannot run.
+  if cfg.threads < 1: raise newException(ValueError, "RoundsConfig.threads must be >= 1, got " & $cfg.threads)
+  if cfg.opsPerThread < 0: raise newException(ValueError, "RoundsConfig.opsPerThread must be >= 0, got " & $cfg.opsPerThread)
+  if cfg.rounds < 0: raise newException(ValueError, "RoundsConfig.rounds must be >= 0, got " & $cfg.rounds)
+
 proc runRound*[Obj, Op, Res](cfg: RoundsConfig, round: int,
                              setup: proc (obj: var Obj) {.nimcall.},
                              genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.},
@@ -62,6 +68,7 @@ proc runRound*[Obj, Op, Res](cfg: RoundsConfig, round: int,
                              hooks = ThreadHooks()): History[Op, Res] =
   ## One recorded round (no check). Exposed for tests that drive rounds
   ## themselves, e.g. to compare settings.
+  validate(cfg)
   var rng = initRand(cfg.seed * 1_000_003 + round + 1)
   var ops = newSeq[seq[Op]](cfg.threads)
   for t in 0 ..< cfg.threads:
@@ -88,6 +95,7 @@ proc runRounds*[S, Obj, Op, Res](cfg: RoundsConfig, init: S, model: typedesc,
   ## linearizable (`vkNotLinearizable` or `vkInconclusive`). On failure the
   ## history is shrunk (if `cfg.shrink` and not inconclusive) and saved as
   ## `<saveDir>/<name>-seed<seed>-round<r>.jsonl`. `describe` prints it all.
+  validate(cfg)
   result.seed = cfg.seed
   result.passed = true
   for r in 1 .. cfg.rounds:

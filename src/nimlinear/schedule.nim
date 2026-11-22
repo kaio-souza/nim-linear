@@ -91,6 +91,11 @@ proc initScheduler*(s: var Scheduler, threads: Positive, seed: int, depth = 3,
   ## Prepares a round for `threads` threads and installs the scheduler. `depth`
   ## is PCT's bug depth (number of priority changes + 1); `steps` estimates the
   ## number of scheduling points in the round, where change points are drawn.
+  ## Raises `ValueError` if another scheduler is still installed (call
+  ## `deinitScheduler` first): only one can be active at a time.
+  if gSched != nil:
+    raise newException(ValueError, "nimlinear/schedule: another Scheduler is active; " &
+      "call deinitScheduler on it first")
   initLock s.lock
   initCond s.cond
   s.n = threads

@@ -94,3 +94,23 @@ suite "outcomes: oracle":
     agree(BagModel, BagState(), bagOp, bagOther)
   test "weak CAS: agrees with the oracle on 10,000 random histories":
     agree(WeakRegModel, WState(), wOp, wOther)
+
+suite "outcomes: review fixes":
+  test "a pending op with no outcome is never stuck (not applied)":
+    # PickyModel: take() on an empty bag has no outcome at all.
+    let evs = @[invokeEvent[BagOp, BagRes](1, 1, 1, take())] &
+              bop(2, 0, 2, 3, put(1)) & bop(3, 0, 4, 5, take(), r(7))
+    let v = checkLinearizable(newHistory(evs), BagState(), PickyModel)
+    check v.kind == vkNotLinearizable
+    check int(v.witness.stuck) == 3
+    for a in v.witness.alternatives: check int(a.candidate) != 1
+
+  test "a tick with no outcome can be stuck, with its own id (not stale)":
+    # put(1) fine, then a tick whose call is take() on an empty bag after the
+    # item was taken: no outcome. The stuck must be the tick (id 9).
+    let evs = bop(1, 0, 1, 2, put(1)) & bop(2, 0, 3, 4, take(), r(1)) &
+              @[tickEvent[BagOp, BagRes](9, 5, 5, take())]
+    let v = checkLinearizable(newHistory(evs), BagState(), PickyModel)
+    check v.kind == vkNotLinearizable
+    check int(v.witness.stuck) == 9
+    check v.witness.stuckCall == take()

@@ -139,3 +139,11 @@ suite "checker: timeout (M20)":
     let v = checkLinearizable(newHistory(evs), RegState(), RegisterModel, budget = 3)
     check v.kind == vkInconclusive
     check not v.timedOut
+
+suite "checker: review fixes":
+  test "budget below 1 is treated as 1: statesExplored never exceeds it":
+    let v = checkLinearizable(newHistory(op(1, 0, 1, 2, write(1), ok()) & op(2, 0, 3, 4, read(), ok(1))),
+                              RegState(), RegisterModel, budget = 0)
+    check v.kind == vkInconclusive
+    check v.statesExplored <= v.budget
+    check v.budget == 1
