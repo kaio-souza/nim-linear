@@ -52,4 +52,4 @@ Each gap has a milestone in the [Roadmap](../README.md#roadmap). All eleven were
 10. **Generic partition key (M21).** `partition` returns `int`; string keys must be hashed by the user. A collision is not wrong, only slower. Direction: any key type with `hash`, `==` and `<` (for D-20 order).
    **Status:** done.
 11. **Smaller items (M24).** `History.events` is public, so a history can skip `newHistory` validation; async use (chronos, asyncdispatch) works with a logical thread index per task but is not documented; the macOS CI job installs Nim from `brew` without a pinned version.
-   **Status:** done: `History` fields private (`events` accessor, `newHistoryUnchecked`), async usage in [History](HISTORY.md#async-code), macOS CI builds the exact Nim version from source.
+   **Status:** done: `History` fields private (`events` accessor, `subHistory`), async usage in [History](HISTORY.md#async-code), macOS CI builds the exact Nim version from source.

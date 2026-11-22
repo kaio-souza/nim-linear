@@ -42,8 +42,8 @@ func outcomes(m: typedesc[MyModel], s: MyState, op: MyOp): seq[Expected[MyState,
 It lists **every** allowed `(next state, result)` pair. The checker:
 
 - for a completed operation, tries the outcomes whose result equals the observed one (in the order listed, D-20);
-- for a pending operation, tries every outcome (and also "not applied");
-- for a tick, tries every outcome; the result is ignored.
+- for a pending operation, tries every outcome (and also "not applied"); with no outcome it is just not applied, never a failure;
+- for a tick, tries every outcome; the result is ignored. A tick with no outcome is a failure (the clock did advance), and it can be the `stuck` operation.
 
 If no outcome matches, the first one is reported as `expected` in the witness. An empty list means "this operation cannot happen in this state" (`why: "no outcome"`). When a model defines both, `outcomes` wins. Bag example, with the state kept sorted so that equal bags compare equal:
 

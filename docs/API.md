@@ -49,7 +49,7 @@ type History*[Op, Res] = object   # fields private (M24)
 func events*[Op, Res](h: History[Op, Res]): lent seq[Event[Op, Res]]   # ordered by seq, read-only
 ```
 
-A `History` is built only by `newHistory` (validated) or `newHistoryUnchecked` (see below), so it cannot be assembled by hand and skip validation.
+A `History` is built only by `newHistory` (validated) or `subHistory` (a subset of a valid history), so every `History` value is valid.
 
 Invariants, checked by `newHistory` (a history that violates any of them is rejected with `ArgumentError` at construction, not at check time):
 
@@ -163,7 +163,7 @@ Filling rules (D-20):
 
 - **`order` is deterministic.** The search tries candidates in increasing `seq` of the `invoke`; `order` is the first linearization found in that order. The same history, model and `init` always give the same `order`.
 - **Pending operations in `order`:** a pending operation the search treated as applied appears in `order`; one treated as not applied is left out.
-- **`Witness`:** `prefix` is the longest prefix found (ties: the first in the order above); `stuck` is the first candidate (lowest `invoke` `seq`) at that point; `alternatives` is ordered by the candidate's `invoke` `seq`. Pending operations are never `stuck`, because they can always be treated as not applied.
+- **`Witness`:** `prefix` is the longest prefix found (ties: the first in the order above); `stuck` is the first candidate (lowest `invoke` `seq`) at that point; `alternatives` is ordered by the candidate's `invoke` `seq`. Pending operations are never `stuck`, because they can always be treated as not applied (also with `outcomes`: a pending operation with no outcome is simply not applied). A tick can be `stuck` only with `outcomes` returning nothing for it. If no candidate could be blamed, `stuck` is `OpId(0)`.
 
 ## Procedures
 
@@ -184,7 +184,7 @@ proc snapshot*[Op, Res](r: var Recorder[Op, Res]): History[Op, Res] {.raises: [A
 
 - `threads`: number of threads that will record. `thread` in `begin` is an index in `0 ..< threads` (it becomes the event's `ThreadId`). Each index must be used by **one** thread only.
 - `begin` takes the `invoke` `seq` **before** returning; call it before the real operation. `finish` takes the `return` `seq`; call it afterwards. See [event order](HISTORY.md#event-order).
-- `begin`/`finish` do not raise and do not validate usage, to keep the hot path light. Errors (index out of range, `finish` twice, `finish` without `begin`) show up as `ArgumentError` in `snapshot`, which goes through `newHistory`.
+- `begin`/`finish` do not raise, to keep the hot path light. Errors (index out of range, `finish` twice, `finish` without `begin`, `finish` from a thread that did not call `begin` for that operation) show up as `ArgumentError` in `snapshot`. A `finish` from the wrong thread is refused without writing, since writing would race with the owning thread.
 - `record` = `begin`, then `body` (must give a `Res`), then `finish` with that result, which it returns. If `body` raises, `finish` is not called and the operation stays pending. See [History](HISTORY.md#concurrent-recording-recorder).
 - `tick` records an instantaneous event with one `seq`. Call it right **after** advancing the fake clock, from the thread that advanced it. A bad `thread` index shows up as `ArgumentError` in `snapshot`, like the other misuses.
 - `snapshot` may only be called after every thread has finished (`joinThreads`). It does not clear the buffers; for the next round, create another recorder.
@@ -226,7 +226,7 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S,
 
 `timeout` applies to the whole call (one deadline shared by every part); after a part times out, the remaining parts are not checked.
 
-For ticks, the condition also requires that a tick acts on each key independently (for example, aging every entry of a TTL map). The library does not check the partition's validity condition. Whoever writes the model is responsible for it. If the partition is invalid, the verdict may be wrong, and the library cannot detect that.
+For ticks, the condition also requires that a tick acts on each key independently (for example, aging every entry of a TTL map). The library does not check the partition's validity condition at run time by default. Compile with `-d:nimlinearVerifyPartition` to have `checkPartitioned` also run `checkLinearizable` on the whole history and raise `AssertionDefect` if the two definitive verdicts disagree (expensive; meant for validating a new `partition` on small histories, like the oracle). Whoever writes the model is responsible for it. If the partition is invalid, the verdict may be wrong, and the library cannot detect that.
 
 ### `newHistory`
 
@@ -237,10 +237,10 @@ proc newHistory*[Op, Res](events: seq[Event[Op, Res]]): History[Op, Res] {.raise
 Checks the invariants described above and sorts by `seq`.
 
 ```nim
-func newHistoryUnchecked*[Op, Res](events: seq[Event[Op, Res]]): History[Op, Res]
+proc subHistory*[Op, Res](h: History[Op, Res], keep: HashSet[OpId]): History[Op, Res]
 ```
 
-No validation and no sorting. Only for events taken from a valid history (a subset of its operations, or valid parts merged in `seq` order), as `shrink` and `checkPartitioned` do internally.
+The operations of `h` whose id is in `keep`, with all their events. Removing whole operations keeps every invariant, so the result is valid by construction. `shrink` and `checkPartitioned` use it.
 
 ### `shrink` (M16)
 
@@ -307,7 +307,7 @@ proc runRound*[...](cfg, round, setup, genOp, exec, teardown = nil, hooks): Hist
 proc describe*[Op, Res](r: RoundsResult[Op, Res]): string
 ```
 
-Per round: a fresh `Obj` from `setup`; `opsPerThread` operations per thread from `genOp`, drawn on the main thread from a generator seeded with `(seed, round)` (same seed, same operations; `index` helps make values unique); threads run `exec` through `Recorder.record`; `teardown`; check. It stops at the first round that is not `vkLinearizable`, shrinks the history (unless inconclusive or `shrink = false`), and saves it as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`. `RoundsResult` has `passed`, `rounds`, `seed`, `verdict`, `history` (shrunk), `original` and `savedTo`; `describe` prints all of it with the timeline. `ThreadHooks(enter, leave)` run at the start and end of each thread, for `nimlinear/schedule`. Example: [`examples/queue_race.nim`](../examples/queue_race.nim).
+`runRounds`/`runRound` raise `ValueError` for `threads < 1`, `opsPerThread < 0` or `rounds < 0` (`validate`). Per round: a fresh `Obj` from `setup`; `opsPerThread` operations per thread from `genOp`, drawn on the main thread from a generator seeded with `(seed, round)` (same seed, same operations; `index` helps make values unique); threads run `exec` through `Recorder.record`; `teardown`; check. It stops at the first round that is not `vkLinearizable`, shrinks the history (unless inconclusive or `shrink = false`), and saves it as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`. `RoundsResult` has `passed`, `rounds`, `seed`, `verdict`, `history` (shrunk), `original` and `savedTo`; `describe` prints all of it with the timeline. `ThreadHooks(enter, leave)` run at the start and end of each thread, for `nimlinear/schedule`. Example: [`examples/queue_race.nim`](../examples/queue_race.nim).
 
 ### JSON: `toJsonLines` and `parseJsonLines`
 
@@ -355,6 +355,7 @@ proc leave*(s: var Scheduler) {.raises: [].}                 # last call in each
 
 - Only one registered thread runs at a time; threads switch only at `perturb()`, `enter` and `leave`. While a scheduler is installed, `perturb()` is its switch point instead of a random draw.
 - Choice of the next thread: PCT. Each thread gets a random distinct priority; the highest-priority unfinished thread runs; at `depth - 1` steps drawn from `1 .. steps`, the running thread drops below every initial priority.
+- One scheduler at a time: `initScheduler` raises `ValueError` while another one is installed.
 - Same seed, same threads, same code: same interleaving, so the `Recorder` history is the same byte for byte.
 - **Rule:** between `enter` and `leave`, a thread must not block in the OS waiting for another registered thread (no joins, no blocking reads, no `perturb()` while holding a plain `Lock` others take). Otherwise the round hangs. Locks of the object under test should be `SchedLock`.
 - Switches happen only at `perturb()`, `enter`, `leave` and `SchedLock.acquire`. Code between two points runs atomically under the scheduler: a bug whose window has no point is not explored.
