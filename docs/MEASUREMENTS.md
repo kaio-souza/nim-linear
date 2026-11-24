@@ -78,6 +78,40 @@ How to read it:
 | B | n = 9 / 10 | 1.45 s / 15.7 s |
 | C | 10 000 / 20 000 ops | 305 ms / 1.26 s (quadratic) |
 
+## Round harness cost
+
+R6 and R7, measured with `tests/measure/rounds_cost.nim`:
+
+```sh
+nim c -r -d:release --mm:orc --threads:on tests/measure/rounds_cost.nim
+```
+
+### 2026-11-24
+
+- Nim 2.2.4, `--mm:orc -d:release --threads:on`, Linux amd64, 8 logical CPUs (Intel Core i5-10210U)
+- 3 runs; ranges below.
+
+**Where a round's time goes (R6).** `runRound` with an atomic counter, then `checkLinearizable` on each history, then the same number of create/join of empty threads alone:
+
+| Round | Record (per round) | Empty create + join | Check (per round) | Create + join share |
+|---|---|---|---|---|
+| 3 threads × 4 ops | 62–78 µs | 43–52 µs | 5–7 µs | 60–64% |
+| 8 threads × 4 ops | 164 µs | 118 µs | 12.5 µs | 67% |
+
+Creating and joining threads is most of a round, but a round is cheap: 5 000 rounds of 3 × 4 take about 0.4 s. **Decision: no thread pool for now.** Fresh threads per round keep rounds isolated (thread-local state, such as the scheduler's thread id and `perturb`'s generator, starts clean), and the saving would be well under a second per test. Revisit if a test needs far more rounds or an `exec` makes the rest of the round much cheaper than here.
+
+**Recorder overhead and its effect on interleavings (R7).** 3 threads, each 2 000 increments of a read-then-write counter (lost updates on purpose), 50 trials; the final value is compared without the checker, with and without `Recorder.record` around each increment:
+
+| | Time per increment | Lost updates |
+|---|---|---|
+| plain | 5–7 ns | 57–60% of increments |
+| recorded, before padding | 162–171 ns | 7.7–9.3% |
+| recorded, padded buffers (current) | 110–142 ns | 7.3–7.8% |
+
+Recording costs ~100–140 ns per operation, mostly the shared atomic `seq` counter (two `fetchAdd` per operation on one contended cache line). Before, buffers of different threads also shared cache lines; they are now padded to separate lines, which cut the overhead by about a third. The counter itself cannot go: it defines the `seq` order the checker relies on.
+
+The effect on interleavings is large: recording makes this race about **8× less frequent**, because the time spent recording is time outside the racy window, and the shared counter partly serializes the threads. Consequence: rely on `perturb()` points and the PCT scheduler (Guide, step 5b) to open narrow windows, not on raw thread overlap; and always confirm with an injected bug that the test fails (Guide, step 5). This measures the most contended case (back-to-back operations); with real operations that take longer than the recording, the relative effect is smaller.
+
 ## Limits of these numbers
 
 - The memory table uses one shape only (`tests/measure/measure.nim`, an easy one; see shapes A and B for worst cases). Histories where operations overlap more widely (long operations spanning many rounds of other threads) or models with larger state spaces (`BoundedQueue`) can visit far more configurations. The Budget table keeps its conservative estimates until such shapes are measured too.

@@ -12,6 +12,8 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 ### Added
 
+- `tests/measure/rounds_cost.nim`: cost of a round and recorder overhead (R6, R7), results in `docs/MEASUREMENTS.md`.
+
 - `RoundsConfig.partitioned` (check and shrink with `checkPartitioned`), `RoundsConfig.timeout` (per check) and `RoundsConfig.shrinkTimeout` (R3, R4, R12).
 - `runRounds` accepts `init` as `proc (round: int): S` (R5) and a `setup` with a second `RoundInfo` argument carrying the round and a per-round seed for the scheduler (R10).
 - `shrink` takes a `timeout` for the whole call (R12).
@@ -19,11 +21,15 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 ### Changed
 
+- **Breaking** (models): a `step` or `outcomes` with side effects (reads or writes a global, does I/O) no longer compiles; the checker calls them through a `func` (R8). `-d:nimlinearImpureModel` turns the check off.
+- `Recorder` buffers are padded to separate cache lines: recording overhead down by about a third (R7).
+- Docs: the `order` of `checkPartitioned` is the concatenation of the parts' orders, not a global order; ticks appear once per part (R13).
+
 - **Breaking** (operations generated per seed): the per-round generator seed is now `roundSeed(seed, round)` (a 64-bit mix) instead of `seed * 1_000_003 + round + 1`, which overflowed for large seeds and collided (R15). The same seed generates different operations than in 0.1.0; histories saved by 0.1.0 still load and replay.
 
-### Known issues
+### Notes
 
-- Intermittent SIGSEGV on Windows (R2), seen once in 0.1.0; cause unknown.
+- The intermittent SIGSEGV on Windows listed as a known issue in 0.1.0 (R2) was seen once in CI and has not been reproduced since (88 repeated runs on Windows). Closed; notes for a recurrence are in the Roadmap.
 
 ## 0.1.0
 

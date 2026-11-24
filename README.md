@@ -180,11 +180,7 @@ Comparison with other tools (Porcupine, Knossos, Lincheck, Thread Collider): [`d
 
 ## Known issues
 
-Tracked in the [Roadmap](CONTRIBUTING.md#found-on-code-review) (R2):
-
-- **Intermittent SIGSEGV on Windows** was seen once in `tests/trounds.nim` (orc, threads on, release). The cause is unknown; CI repeats that test with stack traces.
-
-In 0.1.0 (fixed in the next release, see the [Changelog](CHANGELOG.md)): an exception raised by `exec` was not reported as a failure; `runRounds` ignored `partition`, had no `timeout` and one fixed initial state; a scheduler created in `setup` got the same seed in every round; `shrink` had no time limit.
+None open. In 0.1.0 (fixed in the next release, see the [Changelog](CHANGELOG.md)): an exception raised by `exec` was not reported as a failure; `runRounds` ignored `partition`, had no `timeout` and one fixed initial state; a scheduler created in `setup` got the same seed in every round; `shrink` had no time limit. An intermittent SIGSEGV on Windows seen once in CI has not been reproduced since ([notes](CONTRIBUTING.md#found-on-code-review), R2).
 
 ## Terms
 

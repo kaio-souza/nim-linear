@@ -18,9 +18,11 @@ type
     events: seq[Event[Op, Res]]
     nextLocal: int     # per-index op counter
     busy: Atomic[bool] # set while a call writes this buffer
+    pad: array[64, byte] # keeps buffers of different threads on different cache lines
 
   Recorder*[Op, Res] = object
-    counter: Atomic[int]
+    counter {.align(64).}: Atomic[int]
+    pad: array[56, byte]  # counter alone on its cache line
     bufs: seq[Buf[Op, Res]]
     misuse: Atomic[bool]   # a begin/finish with an invalid thread or id
 

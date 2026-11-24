@@ -163,6 +163,7 @@ Human-readable text comes from the `report` proc (below), not from a field.
 Filling rules (D-20):
 
 - **`order` is deterministic.** The search tries candidates in increasing `seq` of the `invoke`; `order` is the first linearization found in that order. The same history, model and `init` always give the same `order`.
+- **`order` of `checkPartitioned` (R13) is not a global order.** It is the concatenation of each part's `order`, parts in increasing key order (D-20). Within a part it respects real time; across parts it does not (an operation of key 2 can appear after a later operation of key 1). Every tick belongs to every part, so a tick appears once **per part**. A global order exists (linearizability is local), but `checkPartitioned` does not build one; to get it, run `checkLinearizable` on the history.
 - **Pending operations in `order`:** a pending operation the search treated as applied appears in `order`; one treated as not applied is left out.
 - **`Witness`:** `prefix` is the longest prefix found (ties: the first in the order above); `stuck` is the first candidate (lowest `invoke` `seq`) at that point; `alternatives` is ordered by the candidate's `invoke` `seq`. Pending operations are never `stuck`, because they can always be treated as not applied (also with `outcomes`: a pending operation with no outcome is simply not applied). A tick can be `stuck` only with `outcomes` returning nothing for it. If no candidate could be blamed, `stuck` is `OpId(0)`.
 

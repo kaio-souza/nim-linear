@@ -23,11 +23,22 @@ The initial state is not part of the model: it is passed to `checkLinearizable(h
 
 | Rule | Reason |
 |---|---|
-| `step` is a `func`, `{.raises: [].}` and has no side effects | the checker calls `step` many times in different orders, and the core does not raise (D-16) |
+| `step` is a `func`, `{.raises: [].}` and has no side effects | the checker calls `step` many times in different orders, and the core does not raise (D-16). Checked at compile time, see below |
 | the state is a value `object`, with no `ref` | `func` does not forbid `ref` or globals; `ref` hides mutation |
 | `hash` and `==` cover **every** state field, including configuration constants | memoization uses `(linearized, state)` as the key; a forgotten field gives a wrong verdict (D-04) |
 | `step` is total (answers for every state/operation combination) | an invalid operation must become an error result, not an exception |
 | no wall-clock time inside `step` | see [Time](#time) |
+
+**Purity (R8).** The checker calls `step` (and `outcomes`) many times, from different states and in different orders, and caches states by `hash`. A `step` that keeps anything outside its arguments breaks this silently: the verdict depends on the order of the search, and the same history can give different verdicts. What fails:
+
+```nim
+var calls = 0
+proc step(m: typedesc[CounterModel], s: CState, op: COp): Expected[CState, CRes] {.raises: [].} =
+  inc calls                                      # global: changes with every call the search makes
+  Expected[CState, CRes](next: s, res: CRes(value: calls))
+```
+
+The checker calls `step` and `outcomes` through a `func`, so this does not compile (`'pureStep' can have side effects`, with a hint naming the global). A `proc` without side effects is accepted. **Not caught:** mutation through a `ref` or `ptr` reachable from the state or the operation (Nim's `func` allows it unless you compile with `--experimental:strictFuncs`). Keep the state a plain value (`object`, `seq`, `tuple`); never a `ref`. Escape hatch, for debugging only: `-d:nimlinearImpureModel` (for example, to `echo` from `step`).
 
 There is no `Model` concept type: the contract is checked at compile time by the calls the checker makes (see [API](API.md#model)). A missing `hash` or `==`, or a `step` that can raise, does not compile.
 

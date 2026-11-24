@@ -104,6 +104,23 @@ template hasOutcomes*(model: typedesc, S, Op: typedesc): bool {.dirty.} =
   ## True when the model defines the nondeterministic contract (M14).
   compiles(outcomes(model, default(S), default(Op)))
 
+# R8: `step` and `outcomes` are called through these `func`s, so a model that
+# reads or writes a global, does I/O or calls a proc with side effects does not
+# compile ("'pureStep' can have side effects"). Mutation through a `ref` or
+# `ptr` inside the state is not caught (only with --experimental:strictFuncs).
+# Escape hatch: -d:nimlinearImpureModel (the checker's results are then only
+# as deterministic as the model).
+when defined(nimlinearImpureModel):
+  template pureStep(model, s, op: untyped): untyped = step(model, s, op)
+  template pureOutcomes(model, s, op: untyped): untyped = outcomes(model, s, op)
+else:
+  func pureStep[S, Op](model: typedesc, s: S, op: Op): auto =
+    mixin step
+    step(model, s, op)
+  func pureOutcomes[S, Op](model: typedesc, s: S, op: Op): auto =
+    mixin outcomes
+    outcomes(model, s, op)
+
 proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
                            budget: int, deadline: MonoTime, useDeadline: bool,
                            explored: var int, timedOut: var bool): Verdict[Op, Res] {.raises: [].} =
@@ -218,7 +235,7 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
       stack[top].cur = i
       let check = not ops[i].pending and not ops[i].tick
       when hasOutcomes(model, S, Op):
-        let outs = outcomes(model, stack[top].state, ops[i].call)
+        let outs = pureOutcomes(model, stack[top].state, ops[i].call)
         for e in outs:
           if not check or e.res == ops[i].res: stack[top].nexts.add e.next
         if stack[top].nexts.len == 0:
@@ -236,7 +253,7 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
         when not compiles(step(model, stack[top].state, ops[i].call)):
           {.error: "the model needs `step` or `outcomes` (docs/MODELS.md#contract); " &
                    "if it defines `outcomes`, that definition does not compile".}
-        let e = step(model, stack[top].state, ops[i].call)
+        let e = pureStep(model, stack[top].state, ops[i].call)
         if check and not (e.res == ops[i].res):
           stack[top].alts.add Alternative[Res](candidate: ops[i].id, expected: e.res,
                                                observed: ops[i].res, why: e.why)
@@ -305,6 +322,8 @@ proc checkPartitioned*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc
   ## increasing key order (D-12, D-20). The key may be any type with `hash`,
   ## `==` and `<` (M21). Ticks (M10) go into every part. `budget` applies per
   ## part; `timeout` to the whole call. See docs/API.md#checkpartitioned.
+  ## On `vkLinearizable`, `order` is the concatenation of the parts' orders
+  ## (keys ascending), not a global real-time order; ticks appear once per part.
   mixin partition, `<`, `==`, hash
   type K = typeof(partition(model, default(Op)))
   var parts = initTable[K, HashSet[OpId]]()
