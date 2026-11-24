@@ -4,9 +4,26 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 ## Unreleased
 
-### Known issues in 0.1.0
+### Fixed
 
-Listed in the README ("Known issues") and in the Roadmap (R1–R15): exceptions in `exec` are not reported; an intermittent SIGSEGV on Windows; `runRounds` ignores `partition`, has no `timeout` and one fixed initial state; the scheduler gets the same seed in every round; `shrink` has no time limit.
+- An exception raised by `exec` now fails the round: `RoundsResult.error` names the thread, operation and exception; `ThreadHooks.leave` and `teardown` still run; `runRound` raises the new `ExecError`. Threads already started are joined if `createThread` fails (R1).
+- `perturb()` and `SchedLock` from a thread that did not call `enter` (or already called `leave`) are ignored by the scheduler instead of acting as thread 0 (R11).
+- A history is no longer overwritten when saved twice with the same seed: `-2`, `-3`... is appended (R9). A failed save is reported in `RoundsResult.saveError` and `describe` (R14).
+
+### Added
+
+- `RoundsConfig.partitioned` (check and shrink with `checkPartitioned`), `RoundsConfig.timeout` (per check) and `RoundsConfig.shrinkTimeout` (R3, R4, R12).
+- `runRounds` accepts `init` as `proc (round: int): S` (R5) and a `setup` with a second `RoundInfo` argument carrying the round and a per-round seed for the scheduler (R10).
+- `shrink` takes a `timeout` for the whole call (R12).
+- `roundSeed(seed, round)`.
+
+### Changed
+
+- **Breaking** (operations generated per seed): the per-round generator seed is now `roundSeed(seed, round)` (a 64-bit mix) instead of `seed * 1_000_003 + round + 1`, which overflowed for large seeds and collided (R15). The same seed generates different operations than in 0.1.0; histories saved by 0.1.0 still load and replay.
+
+### Known issues
+
+- Intermittent SIGSEGV on Windows (R2), seen once in 0.1.0; cause unknown.
 
 ## 0.1.0
 

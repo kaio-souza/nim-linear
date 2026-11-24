@@ -94,6 +94,16 @@ else:
       withLock l: discard
       deinitSchedLock l
 
+    test "R11: perturb and SchedLock from an unregistered thread are ignored":
+      var s: Scheduler
+      s.initScheduler(2, 1)
+      perturb()                  # main thread never called enter: no hang
+      var l: SchedLock
+      initSchedLock l
+      withLock l: perturb()
+      deinitSchedLock l
+      s.deinitScheduler()
+
     test "a second active scheduler is refused":
       var a, b: Scheduler
       a.initScheduler(1, 1)

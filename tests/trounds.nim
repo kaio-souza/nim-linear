@@ -1,9 +1,9 @@
 ## M17: runRounds on a tiny object: an atomic counter (correct) and a
 ## read-then-write counter (lost updates). Deterministic: every round runs
-## under the PCT scheduler (seeded per round in `setup`), and the racy window
+## under the PCT scheduler (seeded per round in `setup` from `RoundInfo`), and the racy window
 ## is a `perturb()` point, so the outcome does not depend on the OS.
 ## Compiled with -d:nimlinearPerturb (trounds.nims).
-import std/[algorithm, atomics, os, random, strutils, unittest]
+import std/[algorithm, atomics, hashes, os, random, strutils, times, unittest]
 when not compileOption("threads"):
   suite "rounds":
     test "skipped without threads":
@@ -30,12 +30,10 @@ else:
 
   var racy = false
   var sched: Scheduler
-  var roundNo = 0
   var nThreads = 3     # must match the RoundsConfig threads of each test
-  proc setupCounter(c: var Counter) =
+  proc setupCounter(c: var Counter, info: RoundInfo) =
     c.racy = racy
-    inc roundNo
-    sched.initScheduler(nThreads, roundNo, depth = 3, steps = 30)
+    sched.initScheduler(nThreads, info.seed, depth = 3, steps = 30)
   var teardowns = 0
   proc teardownCounter(c: var Counter) =
     inc teardowns
@@ -57,6 +55,40 @@ else:
       CRes(value: c.v.fetchAdd(1) + 1)
 
   let dir = getTempDir() / "nimlinear-trounds"
+
+  # R1: an object whose exec raises on a given operation index.
+  type Boom = object
+    calls: Atomic[int]
+  var boomAt = 2
+  proc setupBoom(b: var Boom) = discard
+  proc execBoom(b: ptr Boom, op: COp): CRes {.gcsafe.} =
+    {.cast(gcsafe).}:
+      if b.calls.fetchAdd(1) == boomAt: raise newException(IOError, "boom")
+    CRes(value: 0)
+  proc genRead(r: var Rand, thread, index: int): COp = COp(inc: false)
+
+  # R3: two independent keyed counters; only linearizable per key.
+  type
+    KOp = object
+      key: int
+      inc: bool
+    KModel = object
+    KObj = object
+      v: array[2, Atomic[int]]
+  func step(m: typedesc[KModel], s: CState, op: KOp): Expected[CState, CRes] {.raises: [].} =
+    if op.inc: Expected[CState, CRes](next: CState(value: s.value + 1), res: CRes(value: s.value + 1))
+    else: Expected[CState, CRes](next: s, res: CRes(value: s.value))
+  func partition(m: typedesc[KModel], op: KOp): int = op.key
+  proc setupK(o: var KObj) = discard
+  proc genK(r: var Rand, thread, index: int): KOp = KOp(key: thread mod 2, inc: r.rand(1) == 0)
+  proc execK(o: ptr KObj, op: KOp): CRes {.gcsafe.} =
+    if op.inc: CRes(value: o.v[op.key].fetchAdd(1) + 1) else: CRes(value: o.v[op.key].load)
+
+  # R5: object that starts at the round number.
+  proc setupFrom(c: var Counter, info: RoundInfo) = c.v.store(info.round)
+  proc initFrom(round: int): CState = CState(value: round)
+  proc execPlain(c: ptr Counter, op: COp): CRes {.gcsafe.} =
+    if op.inc: CRes(value: c.v.fetchAdd(1) + 1) else: CRes(value: c.v.load)
 
   suite "rounds":
     test "correct object passes every round":
@@ -98,3 +130,70 @@ else:
     test "invalid config raises ValueError":
       expect ValueError:
         discard runRounds(RoundsConfig(threads: 0), CState(), CModel, setupCounter, genOp, exec, teardownCounter, hooks)
+
+    test "R1: an exception in exec fails the round and is reported":
+      boomAt = 2
+      let r = runRounds(RoundsConfig(threads: 2, rounds: 5, opsPerThread: 3, saveDir: dir, name: "boom"),
+                        CState(), CModel, setupBoom, genRead, execBoom)
+      check not r.passed
+      check r.rounds == 1
+      check "IOError: boom" in r.error
+      check "exec raised" in r.describe
+
+    test "R1: exception under the scheduler: leave runs, no hang":
+      boomAt = 1
+      racy = false
+      proc setupBoomSched(b: var Boom, info: RoundInfo) =
+        sched.initScheduler(nThreads, info.seed, depth = 3, steps = 30)
+      proc teardownBoom(b: var Boom) = sched.deinitScheduler()
+      let r = runRounds(RoundsConfig(rounds: 3, saveDir: dir, name: "boomsched"),
+                        CState(), CModel, setupBoomSched, genRead, execBoom, teardownBoom, hooks)
+      check not r.passed
+      check "boom" in r.error
+
+    test "R1: runRound raises ExecError":
+      boomAt = 0
+      expect ExecError:
+        discard runRound(RoundsConfig(threads: 1, opsPerThread: 2), 1, setupBoom, genRead, execBoom)
+
+    test "R3: partitioned uses checkPartitioned":
+      let cfg = RoundsConfig(threads: 2, rounds: 20, opsPerThread: 4, saveDir: dir, name: "keyed")
+      var p = cfg
+      p.partitioned = true
+      check runRounds(p, CState(), KModel, setupK, genK, execK).passed
+      check not runRounds(cfg, CState(), KModel, setupK, genK, execK).passed
+      var bad = RoundsConfig(rounds: 1, partitioned: true)
+      expect ValueError:
+        discard runRounds(bad, CState(), CModel, setupBoom, genRead, execBoom)
+
+    test "R4: timeout is passed to the checker":
+      let r = runRounds(RoundsConfig(rounds: 5, timeout: initDuration(seconds = 5)),
+                        CState(), CModel, setupFrom, genOp, execPlain)
+      check not r.passed      # init 0 but object starts at round: not linearizable
+      check runRounds(RoundsConfig(rounds: 5, timeout: initDuration(seconds = 5)),
+                      initFrom, CModel, setupFrom, genOp, execPlain).passed
+
+    test "R9/R14: no overwrite of a saved history, save errors are reported":
+      boomAt = -1
+      let d = dir / "unique"
+      removeDir(d)
+      let cfg = RoundsConfig(rounds: 1, saveDir: d, name: "u")
+      let a = runRounds(cfg, CState(), CModel, setupFrom, genOp, execPlain)
+      let b = runRounds(cfg, CState(), CModel, setupFrom, genOp, execPlain)
+      check a.savedTo.len > 0 and b.savedTo.len > 0
+      check a.savedTo != b.savedTo
+      writeFile(dir / "afile", "")
+      let c = runRounds(RoundsConfig(rounds: 1, saveDir: dir / "afile" / "sub", name: "u"),
+                        CState(), CModel, setupFrom, genOp, execPlain)
+      check c.savedTo == ""
+      check c.saveError.len > 0
+      check "history not saved" in c.describe
+
+    test "R15: roundSeed has no overflow and no trivial collisions":
+      check roundSeed(high(int), high(int)) > 0
+      check roundSeed(low(int), -1) > 0
+      check roundSeed(1, 1_000_003) != roundSeed(2, 0)
+      check roundSeed(1, 1) != roundSeed(1, 2)
+      check roundSeed(9, 3) == roundSeed(9, 3)
+      discard runRound(RoundsConfig(threads: 1, opsPerThread: 1, seed: high(int)), high(int),
+                       setupBoom, genRead, execBoom)

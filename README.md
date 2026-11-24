@@ -180,12 +180,11 @@ Comparison with other tools (Porcupine, Knossos, Lincheck, Thread Collider): [`d
 
 ## Known issues
 
-Tracked in the [Roadmap](CONTRIBUTING.md#found-on-code-review) (R1, R2) and still open in 0.1.0:
+Tracked in the [Roadmap](CONTRIBUTING.md#found-on-code-review) (R2):
 
-- **An exception raised by `exec` is not reported as a failure.** The operation stays pending and the round can still pass. Make `exec` catch exceptions and return an error value in the result.
 - **Intermittent SIGSEGV on Windows** was seen once in `tests/trounds.nim` (orc, threads on, release). The cause is unknown; CI repeats that test with stack traces.
-- `runRounds` always uses `checkLinearizable` (it does not use `partition`), has no wall-clock `timeout`, and takes one fixed initial state for every round.
-- A scheduler created in `setup` gets the same seed in every round unless you keep your own round counter.
+
+In 0.1.0 (fixed in the next release, see the [Changelog](CHANGELOG.md)): an exception raised by `exec` was not reported as a failure; `runRounds` ignored `partition`, had no `timeout` and one fixed initial state; a scheduler created in `setup` got the same seed in every round; `shrink` had no time limit.
 
 ## Terms
 

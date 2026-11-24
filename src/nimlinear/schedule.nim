@@ -19,6 +19,10 @@
 ##   safe and bugs there can be found (M19);
 ## - one scheduler active at a time.
 ##
+## `perturb()` and `SchedLock` from a thread that is not registered (did not
+## call `enter`, or already called `leave`), such as the main thread in
+## `setup`/`teardown`, are ignored by the scheduler: no switch, no waiting.
+##
 ## Switches happen only at the points listed above: `perturb()`, `enter`,
 ## `leave` and `SchedLock.acquire`. Code between two points runs atomically
 ## under the scheduler, so a bug whose window has no point is not explored.
@@ -55,6 +59,7 @@ var gSched: Atomic[pointer]   # the active Scheduler, or nil
 
 template active(): ptr Scheduler = cast[ptr Scheduler](gSched.load(moAcquire))
 var tTid {.threadvar.}: int
+var tRegistered {.threadvar.}: bool   # between `enter` and `leave`
 
 proc runnable(s: Scheduler, t: int): bool =
   not s.done[t] and (s.waitingOn[t] == nil or not s.waitingOn[t].held)
@@ -76,7 +81,9 @@ proc pickNext(s: var Scheduler): int =
 proc switchPoint() {.nimcall, gcsafe, raises: [].} =
   {.cast(gcsafe).}:
     let s = active()
-    if s == nil: return
+    # Threads that did not call `enter` (the main thread in setup/teardown,
+    # helpers) or already called `leave` are not scheduled: no switch.
+    if s == nil or not tRegistered: return
     acquire s.lock
     inc s.step
     for i, c in s.changeAt:
@@ -128,6 +135,7 @@ proc enter*(s: var Scheduler, thread: int) {.raises: [].} =
   ## First call in each registered thread (`thread` in `0 ..< threads`).
   ## Blocks until every thread arrived and this one is scheduled.
   tTid = thread
+  tRegistered = true
   acquire s.lock
   inc s.arrived
   if s.arrived == s.n:
@@ -138,6 +146,7 @@ proc enter*(s: var Scheduler, thread: int) {.raises: [].} =
 
 proc leave*(s: var Scheduler) {.raises: [].} =
   ## Last call in each registered thread: hands control to the next one.
+  tRegistered = false
   acquire s.lock
   s.done[tTid] = true
   s.current = s.pickNext
@@ -156,8 +165,11 @@ proc acquire*(l: var SchedLock) {.raises: [].} =
   ## (yielding) until it is released. Otherwise: an ordinary lock acquire.
   {.cast(gcsafe).}:
     let s = active()
-    if s == nil:
-      acquire l.lock
+    if s == nil or not tRegistered:
+      # Unregistered thread under a scheduler: registered threads are parked
+      # or run one at a time, so it takes the lock without waiting.
+      if s == nil: acquire l.lock
+      else: l.held = true
       return
     switchPoint()
     if l.held:

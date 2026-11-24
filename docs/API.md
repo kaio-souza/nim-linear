@@ -248,10 +248,13 @@ The operations of `h` whose id is in `keep`, with all their events. Removing who
 
 ```nim
 proc shrink*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
-    budget = 1_000_000, partitioned = false): History[Op, Res] {.raises: [].}
+    budget = 1_000_000, partitioned = false,
+    timeout = DurationZero): History[Op, Res] {.raises: [].}
 ```
 
 Greedy, deterministic minimization of a `vkNotLinearizable` history: tries to drop whole threads, then single operations, and keeps a removal only if the history still fails **stuck on the same operation with the same expected result**. Returns `h` unchanged if it does not fail. The guard exists because removing an operation can create a failure that was not in the original (drop the only `write(1)` and a `read() -> 1` becomes unexplainable); it rejects most such removals but is a heuristic, not a proof (D-24). Inconclusive checks count as "not failing".
+
+Cost: up to O(n²) checks for n operations, each with the full `budget`. `timeout` (zero = none) bounds the whole call: when it runs out, `shrink` returns the smallest history found so far (it still fails the same way). Each check gets what is left of the timeout. With a timeout the result depends on the machine; without one it is deterministic.
 
 ### `report`
 
@@ -295,21 +298,38 @@ Exists only with `--threads:on` (module `nimlinear/rounds`, re-exported by `niml
 type RoundsConfig* = object
   threads* = 3; rounds* = 100; opsPerThread* = 4; seed* = 1
   budget* = 1_000_000
+  timeout*: Duration             # per check; zero = none
+  partitioned*: bool             # use checkPartitioned (model needs `partition`)
   shrink* = true                 # shrink the failing history
+  shrinkTimeout*: Duration       # overall limit for shrink; zero = none
   saveDir*: string               # "" = getTempDir()
   name* = "nimlinear"            # file name prefix
 
-proc runRounds*[S, Obj, Op, Res](cfg: RoundsConfig, init: S, model: typedesc,
-    setup: proc (obj: var Obj) {.nimcall.},
+type RoundInfo* = object
+  round*: int                    # 1-based
+  seed*: int                     # roundSeed(cfg.seed, round)
+
+proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc,
+    setup: SP,                   # proc (obj: var Obj) or proc (obj: var Obj, info: RoundInfo)
     genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.},
     exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
     teardown: proc (obj: var Obj) {.nimcall.} = nil,
     hooks = ThreadHooks()): RoundsResult[Op, Res]
 proc runRound*[...](cfg, round, setup, genOp, exec, teardown = nil, hooks): History[Op, Res]
+proc roundSeed*(seed, round: int): int
 proc describe*[Op, Res](r: RoundsResult[Op, Res]): string
 ```
 
-`runRounds`/`runRound` raise `ValueError` for `threads < 1`, `opsPerThread < 0` or `rounds < 0` (`validate`). Per round: a fresh `Obj` from `setup`; `opsPerThread` operations per thread from `genOp`, drawn on the main thread from a generator seeded with `(seed, round)` (same seed, same operations; `index` helps make values unique); threads run `exec` through `Recorder.record`; `teardown`; check. It stops at the first round that is not `vkLinearizable`, shrinks the history (unless inconclusive or `shrink = false`), and saves it as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`. `RoundsResult` has `passed`, `rounds`, `seed`, `verdict`, `history` (shrunk), `original` and `savedTo`; `describe` prints all of it with the timeline. `ThreadHooks(enter, leave)` run at the start and end of each thread, for `nimlinear/schedule`. Example: [`examples/queue_race.nim`](../examples/queue_race.nim).
+`runRounds`/`runRound` raise `ValueError` for `threads < 1`, `opsPerThread < 0` or `rounds < 0` (`validate`). Per round: a fresh `Obj` from `setup`; `opsPerThread` operations per thread from `genOp`, drawn on the main thread from a generator seeded with `roundSeed(seed, round)` (same seed, same operations; `index` helps make values unique); threads run `exec` through `Recorder.record`; `teardown`; check.
+
+- `init` is the model's initial state, or `proc (round: int): S` to start each round from a different state (prepare the same state in `setup`).
+- `setup` may take a second argument, `RoundInfo`: its `seed` is the per-round seed to give a `Scheduler` (`initScheduler(threads, info.seed)`), so each round gets its own PCT priorities.
+- `roundSeed` mixes `(seed, round)` without overflow; different pairs give different seeds except by rare hash collision. `(seed, round)` is the only guaranteed identity of a round.
+- `partitioned = true` checks with `checkPartitioned` (and shrinks with it); it raises `ValueError` if the model has no `partition`. `timeout` is passed to each check and, like in the checker, makes the verdict machine-dependent.
+- An exception (`CatchableError`) raised by `exec` fails the round: the operation stays pending, that thread runs no more operations, `ThreadHooks.leave` and `teardown` still run, and `RoundsResult.error` holds `thread, operation index, call, exception name and message`. `runRound` raises `ExecError` instead. A `Defect` is not caught.
+- It stops at the first round that fails (`exec` raised, or not `vkLinearizable`), shrinks the history (unless inconclusive or `shrink = false`; bounded by `shrinkTimeout`), and saves it as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`; if that file exists, `-2`, `-3`... is appended, so an earlier file is never overwritten. If saving fails, `savedTo` is `""` and `saveError` says why.
+
+`RoundsResult` has `passed`, `rounds`, `seed`, `error`, `verdict`, `history` (shrunk), `original`, `savedTo` and `saveError`; `describe` prints all of it with the timeline. `ThreadHooks(enter, leave)` run at the start and end of each thread, for `nimlinear/schedule`; `leave` runs even if `exec` raised. Example: [`examples/queue_race.nim`](../examples/queue_race.nim).
 
 ### JSON: `toJsonLines` and `parseJsonLines`
 

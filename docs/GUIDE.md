@@ -84,7 +84,8 @@ Rules:
 
 - `vkInconclusive` **fails** the test. If it shows up, shrink the round before raising the budget.
 - On failure, `runRounds` saves the shrunk history as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`; `r.original` keeps the recorded one. To replay it, see [History](HISTORY.md#saving-a-failed-history).
-- To start rounds from a specific state (queue almost full), prepare it in `setup` and pass the matching state as `init`.
+- To start rounds from a specific state (queue almost full), prepare it in `setup` and pass the matching state as `init`. To vary it per round, pass `init` as `proc (round: int): S` and take `RoundInfo` in `setup` to build the same state.
+- If `exec` raises, the round fails and `r.error` says which thread and operation.
 - Without the harness, record by hand with `Recorder` (`begin`/`finish` or `record`): see [History](HISTORY.md#concurrent-recording-recorder).
 
 ## Step 4: time
@@ -101,7 +102,7 @@ Inject a known bug on purpose (for example, remove the capacity check, or replac
 
 If the bug you care about has a narrow window (between reading and changing shared state), put `perturb()` at those points in the object under test and compile the test with `-d:nimlinearPerturb` (D-18). Without the flag, `perturb()` generates no code. Confirm step 5 again: the injected bug should fail in fewer rounds. Example: [`examples/queue_perturb.nim`](../examples/queue_perturb.nim).
 
-To make rounds reproducible, run them under a `Scheduler` from `nimlinear/schedule`: create it in `setup`, remove it in `teardown`, and register the threads through `ThreadHooks`. With the same seed, a round produces the same history byte for byte. Replace the object's locks with `SchedLock`, so that `perturb()` can also go inside critical sections (see [API](API.md#nimlinearschedule-m13)). Examples: [`examples/queue_pct.nim`](../examples/queue_pct.nim), [`tests/trounds.nim`](../tests/trounds.nim).
+To make rounds reproducible, run them under a `Scheduler` from `nimlinear/schedule`: create it in a `setup` that takes a `RoundInfo` (`proc setup(q: var MyQueue, info: RoundInfo)`) with `initScheduler(threads, info.seed)`, so each round gets its own interleaving, remove it in `teardown`, and register the threads through `ThreadHooks`. With the same seed, a round produces the same history byte for byte. Replace the object's locks with `SchedLock`, so that `perturb()` can also go inside critical sections (see [API](API.md#nimlinearschedule-m13)). Examples: [`examples/queue_pct.nim`](../examples/queue_pct.nim), [`tests/trounds.nim`](../tests/trounds.nim).
 
 ## Step 6: CI
 

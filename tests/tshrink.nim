@@ -1,5 +1,5 @@
 ## M16: shrink keeps the failure, never grows, and is deterministic.
-import std/[os, unittest]
+import std/[os, times, unittest]
 import nimlinear
 import nimlinear/models/register
 
@@ -33,6 +33,12 @@ suite "shrink":
     check w.alternatives[^1].expected == ok(3)
     check ids(s) == @[3, 5]
     check shrink(h, RegState(), RegisterModel).toJsonLines == s.toJsonLines
+    # R12: a generous timeout gives the same result; an expired one returns
+    # a history that still fails, no larger than the input.
+    check shrink(h, RegState(), RegisterModel, timeout = initDuration(seconds = 30)).toJsonLines == s.toJsonLines
+    let t = shrink(h, RegState(), RegisterModel, timeout = initDuration(nanoseconds = 1))
+    check t.events.len <= h.events.len
+    check checkLinearizable(t, RegState(), RegisterModel).kind == vkNotLinearizable
 
   test "a linearizable history is returned unchanged":
     let h = newHistory(op(1, 0, 1, 2, write(1), ok()) & op(2, 0, 3, 4, read(), ok(1)))
