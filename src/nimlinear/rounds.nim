@@ -12,7 +12,7 @@
 when not compileOption("threads"):
   {.error: "nimlinear/rounds requires --threads:on".}
 
-import std/[os, random, times]
+import std/[monotimes, os, random, sets, times]
 import ./[history, checker, json, recorder, report, shrink]
 
 type
@@ -25,7 +25,8 @@ type
     timeout*: Duration          ## per check; zero = none. Makes the verdict machine-dependent
     partitioned*: bool          ## use `checkPartitioned` (the model must define `partition`)
     shrink*: bool = true        ## shrink the failing history (M16)
-    shrinkTimeout*: Duration    ## overall limit for `shrink`; zero = none
+    shrinkTimeout*: Duration    ## overall limit for `shrink` (and replay); zero = none
+    replayShrink*: bool         ## also shrink by re-running the real code (D-27); needs deterministic rounds
     saveDir*: string            ## where to save it; "" = getTempDir()
     name*: string = "nimlinear" ## file name prefix
 
@@ -53,6 +54,8 @@ type
     history*: History[Op, Res]   ## failing history (shrunk if shrink)
     original*: History[Op, Res]  ## failing history as recorded
     savedTo*: string             ## path of the saved (shrunk) history, "" if none
+    scenario*: seq[seq[Op]]      ## operations per thread of the failing round (reduced by replay)
+    replay*: string              ## what `replayShrink` did, "" if not requested
     saveError*: string           ## why saving failed, "" if it did not
 
   Ctx[Obj, Op, Res] = object
@@ -99,17 +102,23 @@ proc roundSeed*(seed, round: int): int =
   result = int(z and 0x7FFF_FFFF_FFFF_FFFF'u64)
   if result == 0: result = 1
 
-proc runRoundImpl[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, setup: SP,
-                                    genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.},
-                                    exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
-                                    teardown: proc (obj: var Obj) {.nimcall.},
-                                    hooks: ThreadHooks): (History[Op, Res], string) =
-  validate(cfg)
-  let info = RoundInfo(round: round, seed: roundSeed(cfg.seed, round))
-  var rng = initRand(info.seed)
-  var ops = newSeq[seq[Op]](cfg.threads)
+proc genOps[Op](cfg: RoundsConfig, round: int,
+                genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.}): seq[seq[Op]] =
+  ## The operations of a round, per thread: `genOp` with `initRand(roundSeed(seed, round))`.
+  var rng = initRand(roundSeed(cfg.seed, round))
+  result = newSeq[seq[Op]](cfg.threads)
   for t in 0 ..< cfg.threads:
-    for k in 0 ..< cfg.opsPerThread: ops[t].add genOp(rng, t, k)
+    for k in 0 ..< cfg.opsPerThread: result[t].add genOp(rng, t, k)
+
+proc runOps[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[seq[Op]], setup: SP,
+                              exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
+                              teardown: proc (obj: var Obj) {.nimcall.},
+                              hooks: ThreadHooks): (History[Op, Res], string) =
+  if ops.len != cfg.threads:
+    raise newException(ValueError, "scenario has " & $ops.len &
+      " thread lists, RoundsConfig.threads is " & $cfg.threads)
+  let info = RoundInfo(round: round, seed: roundSeed(cfg.seed, round))
+  var ops = ops
   var obj: Obj
   when compiles(setup(obj, info)): setup(obj, info)
   else: setup(obj)
@@ -138,6 +147,28 @@ proc runRoundImpl[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, setup: SP,
       err = e
       break
   (rec.snapshot(), err)
+
+proc runRoundImpl[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, setup: SP,
+                                    genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.},
+                                    exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
+                                    teardown: proc (obj: var Obj) {.nimcall.},
+                                    hooks: ThreadHooks): (History[Op, Res], string) =
+  validate(cfg)
+  runOps(cfg, round, genOps(cfg, round, genOp), setup, exec, teardown, hooks)
+
+proc runScenario*[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[seq[Op]], setup: SP,
+                                    exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
+                                    teardown: proc (obj: var Obj) {.nimcall.} = nil,
+                                    hooks = ThreadHooks()): History[Op, Res] =
+  ## One recorded round from explicit operations (D-27): `ops[t]` runs on
+  ## thread `t` (`ops.len` must equal `cfg.threads`; a list may be empty).
+  ## `opsPerThread` is ignored. `setup` receives the same `RoundInfo` as
+  ## round `round` of `runRounds`, so a scheduler gets the same seed. Raises
+  ## `ExecError` like `runRound`, `ValueError` for a wrong number of lists.
+  validate(cfg)
+  let (h, err) = runOps(cfg, round, ops, setup, exec, teardown, hooks)
+  if err.len > 0: raise newException(ExecError, err)
+  h
 
 proc runRound*[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, setup: SP,
                                  genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.},
@@ -170,6 +201,103 @@ proc checkWith[S, Op, Res](cfg: RoundsConfig, h: History[Op, Res], init: S,
       raise newException(ValueError, "RoundsConfig.partitioned needs a `partition` for the model")
     checkLinearizable(h, init, model, cfg.budget, cfg.timeout)
 
+type ReplayDeadline = object
+  use: bool
+  at: MonoTime
+
+# Non-generic, so MonoTime/Duration operators resolve here, not at the caller.
+proc initReplayDeadline(timeout: Duration): ReplayDeadline =
+  ReplayDeadline(use: timeout > DurationZero, at: getMonoTime() + timeout)
+
+proc expired(d: ReplayDeadline): bool = d.use and getMonoTime() >= d.at
+
+type ReplaySig[Op, Res] = object
+  fails: bool
+  thread: int
+  call: Op
+  expected: Res
+
+proc replaySig[Op, Res](h: History[Op, Res], v: Verdict[Op, Res]): ReplaySig[Op, Res] =
+  ## The D-24 signature by content (thread, call, expected): `OpId`s shift
+  ## when operations are removed from a scenario.
+  if v.kind != vkNotLinearizable: return
+  result.fails = true
+  for e in h.events:
+    if e.op == v.witness.stuck and e.kind != ekReturn:
+      result.thread = int(e.thread)
+      result.call = e.call
+      break
+  for a in v.witness.alternatives:
+    if a.candidate == v.witness.stuck:
+      result.expected = a.expected
+      break
+
+proc sameSig[Op, Res](a, b: ReplaySig[Op, Res]): bool =
+  mixin `==`
+  a.fails and b.fails and a.thread == b.thread and a.call == b.call and a.expected == b.expected
+
+proc opCount[Op](ops: seq[seq[Op]]): int =
+  for l in ops: result += l.len
+
+proc replayShrink[S, Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[seq[Op]],
+                                       h: History[Op, Res], v: Verdict[Op, Res], init: S,
+                                       model: typedesc, setup: SP,
+                                       exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
+                                       teardown: proc (obj: var Obj) {.nimcall.},
+                                       hooks: ThreadHooks, keepHint: HashSet[(int, int)]):
+                                       (seq[seq[Op]], History[Op, Res], Verdict[Op, Res], string) =
+  ## D-27: greedy removal over the scenario, keeping a removal only if the
+  ## real code still fails with the same signature. `keepHint` holds the
+  ## (thread, index) of operations the history-only shrink kept; the others
+  ## are tried first.
+  let dl = initReplayDeadline(cfg.shrinkTimeout)
+  template expired(): bool = dl.expired
+  # 1. Determinism is checked, not assumed: the same scenario again must
+  #    give the same history, byte for byte.
+  let (h2, err2) = runOps(cfg, round, ops, setup, exec, teardown, hooks)
+  if err2.len > 0 or h2.toJsonLines() != h.toJsonLines():
+    return (ops, h, v, "skipped: the round is not deterministic (running it again gave " &
+                       "another history); run it under nimlinear/schedule")
+  let sig = replaySig(h, v)
+  var cur = ops
+  var curH = h
+  var curV = v
+  var timedOut = false
+  template attempt(cand: seq[seq[Op]]): bool =
+    let (ch, cerr) = runOps(cfg, round, cand, setup, exec, teardown, hooks)
+    var kept = false
+    if cerr.len == 0:
+      let cv = checkWith(cfg, ch, init, model)
+      if sameSig(sig, replaySig(ch, cv)):
+        cur = cand; curH = ch; curV = cv
+        kept = true
+    kept
+  var progress = true
+  while progress and not timedOut:
+    progress = false
+    for t in 0 ..< cur.len:                  # whole threads first
+      if expired(): timedOut = true; break
+      if cur[t].len == 0 or t == sig.thread: continue
+      var cand = cur
+      cand[t] = @[]
+      if attempt(cand): progress = true
+    # Single operations, from the end of each thread: first those the
+    # history-only shrink dropped (index in the original scenario), then the rest.
+    for pass in 0 .. 1:
+      for t in 0 ..< cur.len:
+        var k = cur[t].len - 1
+        while k >= 0 and not timedOut:
+          if expired(): timedOut = true; break
+          if (pass == 0) == ((t, k) notin keepHint):
+            var cand = cur
+            cand[t].delete(k)
+            if attempt(cand): progress = true
+          dec k
+  let msg = "shrunk the scenario from " & $opCount(ops) & " to " & $opCount(cur) &
+            " operations by running the real code" &
+            (if timedOut: " (stopped by shrinkTimeout)" else: "")
+  (cur, curH, curV, msg)
+
 proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc, setup: SP,
                                      genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.},
                                      exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
@@ -194,7 +322,8 @@ proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc
       let st = init(r)
     else:
       let st = init
-    let (h, err) = runRoundImpl(cfg, r, setup, genOp, exec, teardown, hooks)
+    let ops = genOps(cfg, r, genOp)
+    let (h, err) = runOps(cfg, r, ops, setup, exec, teardown, hooks)
     let v = check(h, st)
     if err.len == 0 and v.kind == vkLinearizable: continue
     result.passed = false
@@ -202,9 +331,24 @@ proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc
     result.original = h
     result.history = h
     result.verdict = v
+    result.scenario = ops
     if cfg.shrink and v.kind == vkNotLinearizable:
       result.history = shrink(h, st, model, cfg.budget, cfg.partitioned, cfg.shrinkTimeout)
       result.verdict = check(result.history, st)
+      if cfg.replayShrink:
+        var keep = initHashSet[(int, int)]()   # (thread, index) kept by the history-only shrink
+        for e in result.history.events:
+          if e.kind == ekInvoke:
+            keep.incl (int(e.thread), (int(e.op) - 1) div cfg.threads)
+        let (sc, rh, rv, msg) = replayShrink(cfg, r, ops, h, v, st, model, setup, exec,
+                                             teardown, hooks, keep)
+        result.replay = msg
+        if sc.opCount < ops.opCount:
+          result.scenario = sc
+          result.history = rh        # a real execution of the reduced scenario
+          result.verdict = rv
+    elif cfg.replayShrink:
+      result.replay = "skipped: replay needs a vkNotLinearizable round"
     let dir = if cfg.saveDir.len > 0: cfg.saveDir else: getTempDir()
     try:
       createDir(dir)
@@ -224,6 +368,8 @@ proc describe*[Op, Res](r: RoundsResult[Op, Res]): string =
     result.add ", shrunk from " & $r.original.events.len & " to " & $r.history.events.len & " events"
   if r.error.len > 0:
     result.add "\nexec raised in " & r.error & "\n"
+  if r.replay.len > 0:
+    result.add "\nreplay: " & r.replay & "\n"
   result.add "\n" & report(r.verdict, r.history)
   if r.savedTo.len > 0: result.add "history saved to " & r.savedTo & "\n"
   if r.saveError.len > 0: result.add "history not saved: " & r.saveError & "\n"

@@ -75,7 +75,40 @@ func outcomes(m: typedesc[BagModel], s: BagState, op: BagOp): seq[Expected[BagSt
       result.add Expected[BagState, BagRes](next: n, res: BagRes(value: v))
 ```
 
-Keep the list small and free of duplicates: every outcome is a branch of the search. Infinite choices (any fresh id) do not fit; restrict them in the test (ids from a small pool). If `outcomes` does not compile, the checker falls back to `step` and fails with a message that names both, so check the error carefully. Tested models: `tests/oracle/ndmodels.nim`.
+Keep the list small and free of duplicates: every outcome is a branch of the search. Infinite choices (any fresh id) do not fit; restrict them in the test (ids from a small pool, see [Results from an open set](#results-from-an-open-set)). If `outcomes` does not compile, the checker falls back to `step` and fails with a message that names both, so check the error carefully. Tested models: `tests/oracle/ndmodels.nim`.
+
+### Results from an open set
+
+An allocator that returns "any free id" has no single expected result, and its candidates cannot be listed if ids are unbounded. Make the set finite in the state (D-28): the test configures a small pool, the state tracks which ids are taken, and `outcomes` gives one branch per free id.
+
+```nim
+type
+  AllocOp = object
+    free: bool     # false: alloc(); true: free(id)
+    id: int        # free only
+  AllocRes = object
+    id: int        # alloc: the id returned; -1 = none left
+  AllocState = object
+    pool: seq[int]        # candidate ids, fixed by the test
+    taken: seq[bool]      # one flag per pool entry
+  AllocModel = object
+
+func outcomes(m: typedesc[AllocModel], s: AllocState, op: AllocOp): seq[Expected[AllocState, AllocRes]] {.raises: [].} =
+  if op.free:
+    var n = s
+    let i = s.pool.find(op.id)
+    if i >= 0: n.taken[i] = false
+    return @[Expected[AllocState, AllocRes](next: n, res: AllocRes(id: op.id))]
+  for i, id in s.pool:
+    if not s.taken[i]:
+      var n = s
+      n.taken[i] = true
+      result.add Expected[AllocState, AllocRes](next: n, res: AllocRes(id: id))
+  if result.len == 0:
+    result.add Expected[AllocState, AllocRes](next: s, res: AllocRes(id: -1), why: "pool exhausted")
+```
+
+The real allocator must draw from the same pool in the test (pass it at construction). A pending `alloc` is explored as taking each free id or none, so it stays sound: another operation that observed its id is explained. Keep pools small (3 to 8): each free id is a branch.
 
 ## Writing a model, step by step
 

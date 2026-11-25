@@ -88,6 +88,7 @@ Rules:
 - On failure, `runRounds` saves the shrunk history as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`; `r.original` keeps the recorded one. To replay it, see [History](HISTORY.md#saving-a-failed-history).
 - To start rounds from a specific state (queue almost full), prepare it in `setup` and pass the matching state as `init`. To vary it per round, pass `init` as `proc (round: int): S` and take `RoundInfo` in `setup` to build the same state.
 - If `exec` raises, the round fails and `r.error` says which thread and operation.
+- Under the scheduler, `replayShrink: true` also reduces the failing scenario by running the real code again, and `r.scenario` with `runScenario` replays it exactly ([API](API.md#round-harness-m17)).
 - Without the harness, record by hand with `Recorder` (`begin`/`finish` or `record`): see [History](HISTORY.md#concurrent-recording-recorder).
 
 ## Step 4: time

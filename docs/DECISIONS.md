@@ -207,3 +207,40 @@ Status: **Proposed** (not implemented) or **Accepted**.
 - **Choice:** the memo key is `(f, window, state)`: every operation below index `f` is linearized, `f` is not, and `window` is a bitset of the operations after `f`. `minRet` is kept incrementally over operations sorted by return, and the candidate scan starts at `f`.
 - **Reason:** with bounded overlap the window is one or two words, so each step costs O(overlap).
 - **Consequence:** linear on long histories (40 000 operations in about 20 ms). A pending operation that is never linearized keeps `f` from advancing, so many pending operations in a long history grow the window: cost about quadratic in their number (benchmark shape E). Fully overlapping histories (shapes A, B) stay exponential, as for every checker of this kind.
+
+## D-26: switch points on atomics and locks through a drop-in module (P6)
+
+- **Status:** Accepted (not implemented)
+- **Context:** real use (a circuit breaker with lock-free fast paths on `Atomic` fields) showed that `perturb()` points must be written inside the library under test, at every racy window, to reach narrow interleavings. Without them, the breaker's test relies on 20 000 rounds under the OS scheduler. The roadmap made this wait for P4; real use is the stronger signal.
+- **Options considered:**
+  1. `patchFile` in a `.nims` to replace `std/atomics` and `std/locks` in the test build. Transparent, but it also replaces them for the standard library and for nimlinear itself (the Recorder's counter and the scheduler would switch inside themselves), and it depends on the internal layout of those modules across Nim versions.
+  2. A drop-in module with the same names, imported by the code under test only in test builds.
+  3. Keep manual `perturb()` only.
+- **Choice:** option 2. A module `nimlinear/intercept` re-exports `std/atomics` and `std/locks`. With `-d:nimlinearPerturb`, it adds a `perturb()` before every atomic **write or read-modify-write** (`store`, `exchange`, `compareExchange`, `compareExchangeWeak`, `fetchAdd`, `fetchSub`, `fetchAnd`, `fetchOr`, `fetchXor`, `+=`, `-=`) and makes `Lock` behave as `SchedLock` under an active scheduler (`initLock`, `acquire`, `release`, `withLock` keep their names). Loads get no point: the window between a load and the write that depends on it is already opened by the point before the write, and fewer points keep PCT's depth effective. `Cond` is not intercepted (documented). The code under test switches its imports in one place:
+  ```nim
+  when defined(nimlinearIntercept): import nimlinear/intercept
+  else: import std/[atomics, locks]
+  ```
+  `-d:nimlinearIntercept` is the user's own define, so the production build never imports nimlinear (D-01 for the user's users).
+- **Reason:** keeps the D-18 shape (an optional module that only generates more varied executions; the checker is unchanged), costs nothing without the define, and does not touch the standard library or nimlinear's own synchronization. Determinism under the scheduler (D-20 for executions, M13) is preserved because every new point is a `perturb()`.
+- **Consequence:** one import change in the library under test. More switch points per round: `steps` of `initScheduler` must be raised accordingly (documented with measurements). Still sequential consistency only: relaxed orderings stay invisible (README, Limits). Validated on the circuit breaker before release. P6 no longer waits for P4.
+
+## D-27: shrink with replay only for deterministic rounds (P4)
+
+- **Status:** Accepted (implemented: `runScenario`, `RoundsConfig.replayShrink`)
+- **Context:** D-24 shrinks the history alone and can keep a failure that the real code would not produce, or drop context it needs. Lincheck re-runs the real code on each smaller scenario. Re-running is only meaningful if the same scenario gives the same execution; under the OS scheduler it does not (D-18: only the controlled scheduler reproduces).
+- **Choice:**
+  1. **Scenario as data.** The operations of a round are already drawn on the main thread; a new entry point runs a round from explicit per-thread operation lists (`runScenario`), and `runRound` is defined through it. Removing an operation never changes the others.
+  2. **Determinism is checked, not assumed.** Before replay-shrinking, the failing scenario is run twice with the same round seed; if the two recorded histories differ (byte for byte in JSON), replay is skipped and the result says why. No probabilistic "N attempts" mode: a verdict that depends on luck contradicts D-20.
+  3. **What counts as reproduced:** the replayed history is `vkNotLinearizable` and its stuck operation has the same thread, call and expected result as the original's (the D-24 signature, compared by content because `OpId`s shift when operations are removed).
+  4. **Order and limits:** first the history-only shrink (D-24) to find candidate removals, then greedy replay of whole threads and single operations, bounded by `shrinkTimeout`. Opt-in through `RoundsConfig(replayShrink: true)`; the history-only shrink stays the default.
+- **Reason:** keeps verdicts deterministic, reuses the D-24 signature, and gives the user a scenario the real code fails on, not only a smaller history.
+- **Consequence:** useful only with the scheduler (or code that is deterministic by itself). Removing operations changes the schedule (PCT change points are counted in steps), so a removal can be rejected because the bug moved, not because it needs the operation: the result is a reproducible scenario, not a minimal one. Each replay is a full round: cost grows with the number of candidates. Measured on `tests/trounds.nim` (racy counter, 3 × 12 operations, PCT depth 3): 36 operations reduced to 23 by replay, where the history-only shrink reaches a smaller history; the gain is reproducibility, not size.
+
+## D-28: unbounded results stay out of the model contract (P5)
+
+- **Status:** Accepted
+- **Context:** some operations return a value from an open set (any free id, any timestamp). `step` gives one result and `outcomes` (D-23) lists finitely many. A contract that receives the observed result ("accept this result and give the next state") was already rejected in D-23, because a pending operation has no observed result: its effect could not be explored, and treating it as "not applied" only can report a violation that did not happen (another operation may have observed its id).
+- **Choice:** no new hook. Results from an open set are modeled by making the set finite in the state, which keeps pending operations sound: the state holds the candidate values (for example, a small pool of ids configured by the test), and `outcomes` lists one branch per candidate that is still free. The pattern is documented in [Models](MODELS.md#results-from-an-open-set) with an example.
+- **Reason:** the checker stays sound for pending operations, the verdict stays deterministic (D-20) and the API stays as it is (no **breaking** change). Every case seen so far fits a finite pool; one that cannot would need a new entry here.
+- **Consequence:** the test must restrict the generator to the pool (as the shipped generators already do with keys). The cost grows with the pool size, since each free candidate is a branch; keep pools small (3 to 8 values).

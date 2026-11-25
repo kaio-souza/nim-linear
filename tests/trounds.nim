@@ -55,6 +55,7 @@ else:
       CRes(value: c.v.fetchAdd(1) + 1)
 
   let dir = getTempDir() / "nimlinear-trounds"
+  removeDir(dir)     # saved histories get -2, -3... suffixes (R9): start clean
 
   # R1: an object whose exec raises on a given operation index.
   type Boom = object
@@ -85,6 +86,7 @@ else:
     if op.inc: CRes(value: o.v[op.key].fetchAdd(1) + 1) else: CRes(value: o.v[op.key].load)
 
   # R5: object that starts at the round number.
+  proc setupBoom2(c: var Counter) = discard
   proc setupFrom(c: var Counter, info: RoundInfo) = c.v.store(info.round)
   proc initFrom(round: int): CState = CState(value: round)
   proc execPlain(c: ptr Counter, op: COp): CRes {.gcsafe.} =
@@ -197,3 +199,36 @@ else:
       check roundSeed(9, 3) == roundSeed(9, 3)
       discard runRound(RoundsConfig(threads: 1, opsPerThread: 1, seed: high(int)), high(int),
                        setupBoom, genRead, execBoom)
+
+    test "P4: replay shrink under the scheduler gives a real, reproducible scenario":
+      racy = true
+      let cfg = RoundsConfig(rounds: 200, opsPerThread: 12, saveDir: dir, name: "replay",
+                             replayShrink: true)
+      let r = runRounds(cfg, CState(), CModel, setupCounter, genOp, exec, teardownCounter, hooks)
+      check not r.passed
+      check r.replay.startsWith("shrunk the scenario from 36 to ")
+      var n = 0
+      for l in r.scenario: n += l.len
+      check n < 36
+      check r.verdict.kind == vkNotLinearizable
+      # the reduced scenario fails again, with the same history
+      let again = runScenario(cfg, r.rounds, r.scenario, setupCounter, exec, teardownCounter, hooks)
+      check again.toJsonLines == r.history.toJsonLines
+      check checkLinearizable(again, CState(), CModel).kind == vkNotLinearizable
+      check "replay: shrunk" in r.describe
+
+    test "P4: replay is skipped when the round is not deterministic":
+      # reads return a value that changes between runs of the same scenario
+      proc execDrift(c: ptr Counter, op: COp): CRes {.gcsafe.} =
+        {.cast(gcsafe).}:
+          inc teardowns
+          if op.inc: CRes(value: c.v.fetchAdd(1) + 1) else: CRes(value: -teardowns)
+      let r = runRounds(RoundsConfig(threads: 1, rounds: 1, opsPerThread: 4, saveDir: dir,
+                                     name: "drift", replayShrink: true),
+                        CState(), CModel, setupBoom2, genRead, execDrift)
+      check not r.passed
+      check r.replay.startsWith("skipped: the round is not deterministic")
+
+    test "P4: runScenario checks the number of thread lists":
+      expect ValueError:
+        discard runScenario(RoundsConfig(threads: 2), 1, @[@[COp(inc: true)]], setupBoom2, execPlain)

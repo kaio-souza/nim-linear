@@ -302,7 +302,8 @@ type RoundsConfig* = object
   timeout*: Duration             # per check; zero = none
   partitioned*: bool             # use checkPartitioned (model needs `partition`)
   shrink* = true                 # shrink the failing history
-  shrinkTimeout*: Duration       # overall limit for shrink; zero = none
+  shrinkTimeout*: Duration       # overall limit for shrink and replay; zero = none
+  replayShrink*: bool            # also shrink by re-running the real code (D-27)
   saveDir*: string               # "" = getTempDir()
   name* = "nimlinear"            # file name prefix
 
@@ -317,6 +318,7 @@ proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc
     teardown: proc (obj: var Obj) {.nimcall.} = nil,
     hooks = ThreadHooks()): RoundsResult[Op, Res]
 proc runRound*[...](cfg, round, setup, genOp, exec, teardown = nil, hooks): History[Op, Res]
+proc runScenario*[...](cfg, round, ops: seq[seq[Op]], setup, exec, teardown = nil, hooks): History[Op, Res]
 proc roundSeed*(seed, round: int): int
 proc describe*[Op, Res](r: RoundsResult[Op, Res]): string
 ```
@@ -330,7 +332,15 @@ proc describe*[Op, Res](r: RoundsResult[Op, Res]): string
 - An exception (`CatchableError`) raised by `exec` fails the round: the operation stays pending, that thread runs no more operations, `ThreadHooks.leave` and `teardown` still run, and `RoundsResult.error` holds `thread, operation index, call, exception name and message`. `runRound` raises `ExecError` instead. A `Defect` is not caught.
 - It stops at the first round that fails (`exec` raised, or not `vkLinearizable`), shrinks the history (unless inconclusive or `shrink = false`; bounded by `shrinkTimeout`), and saves it as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`; if that file exists, `-2`, `-3`... is appended, so an earlier file is never overwritten. If saving fails, `savedTo` is `""` and `saveError` says why.
 
-`RoundsResult` has `passed`, `rounds`, `seed`, `error`, `verdict`, `history` (shrunk), `original`, `savedTo` and `saveError`; `describe` prints all of it with the timeline. `ThreadHooks(enter, leave)` run at the start and end of each thread, for `nimlinear/schedule`; `leave` runs even if `exec` raised. Example: [`examples/queue_race.nim`](../examples/queue_race.nim).
+**Replay shrink (D-27).** With `replayShrink = true`, after the history-only shrink, `runRounds` shrinks the failing round's **scenario** (its operations per thread) by running the real code again:
+
+- `runScenario(cfg, round, ops, ...)` runs one round from explicit operation lists (`ops[t]` on thread `t`, `ops.len == threads`); `setup` gets the same `RoundInfo` as that round of `runRounds`.
+- First the failing scenario runs again; if the new history differs from the recorded one (byte for byte in JSON), replay is skipped and `replay` says the round is not deterministic. In practice that means: use it under `nimlinear/schedule`.
+- Then whole threads, then single operations are removed greedily (those the history-only shrink dropped first). A removal is kept only if the real execution still fails with the same stuck operation (same thread, call and expected result, D-24).
+- On success, `scenario` is the reduced scenario, and `history`/`verdict` are a **real execution** of it; `runScenario(cfg, rounds, scenario, ...)` reproduces it. Bounded by `shrinkTimeout`; each attempt is a full round.
+- Removing an operation shifts the scheduler's change points, so the bug can move and a removal be rejected for that reason: the result is reproducible, not minimal. The history-only `shrink` usually gives a smaller history; `original` keeps the recorded one.
+
+`RoundsResult` has `passed`, `rounds`, `seed`, `error`, `verdict`, `history` (shrunk), `original`, `scenario`, `replay`, `savedTo` and `saveError`; `describe` prints all of it with the timeline. `ThreadHooks(enter, leave)` run at the start and end of each thread, for `nimlinear/schedule`; `leave` runs even if `exec` raised. Example: [`examples/queue_race.nim`](../examples/queue_race.nim).
 
 ### JSON: `toJsonLines` and `parseJsonLines`
 

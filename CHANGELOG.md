@@ -14,7 +14,9 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 - Models `Map` (get/put/delete, with `partition` by key), `Stack` (push/pop, optional capacity) and `Semaphore` (tryAcquire/release), with JSON hooks, tests and examples (P2).
 - Default operation generators for the shipped models: `genRegisterOp`, `genEventOp`, `genQueueOp`, `genMapOp`, `genStackOp`, `genSemaphoreOp`, and tunable `randomRegisterOp`, `randomQueueOp`, `randomMapOp` (P3).
+- `runScenario` (a round from explicit operations) and `RoundsConfig.replayShrink`: shrink the failing scenario by re-running the real code, only when the round is deterministic; `RoundsResult.scenario` and `replay` (P4, D-27).
 - Async usage guide, `docs/ASYNC.md`, and `examples/async_counter.nim` (P1).
+- Docs: modeling results from an open set ("any free id") with a finite pool and `outcomes` (D-28, P5).
 
 - `tests/measure/rounds_cost.nim`: cost of a round and recorder overhead (R6, R7), results in `docs/MEASUREMENTS.md`.
 
