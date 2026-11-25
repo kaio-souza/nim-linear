@@ -12,6 +12,10 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 ### Added
 
+- Models `Map` (get/put/delete, with `partition` by key), `Stack` (push/pop, optional capacity) and `Semaphore` (tryAcquire/release), with JSON hooks, tests and examples (P2).
+- Default operation generators for the shipped models: `genRegisterOp`, `genEventOp`, `genQueueOp`, `genMapOp`, `genStackOp`, `genSemaphoreOp`, and tunable `randomRegisterOp`, `randomQueueOp`, `randomMapOp` (P3).
+- Async usage guide, `docs/ASYNC.md`, and `examples/async_counter.nim` (P1).
+
 - `tests/measure/rounds_cost.nim`: cost of a round and recorder overhead (R6, R7), results in `docs/MEASUREMENTS.md`.
 
 - `RoundsConfig.partitioned` (check and shrink with `checkPartitioned`), `RoundsConfig.timeout` (per check) and `RoundsConfig.shrinkTimeout` (R3, R4, R12).

@@ -70,7 +70,7 @@ If the body raises, `finish` is not called and the operation stays pending.
 
 ### Async code
 
-The recorder does not care about OS threads, only about "who is sequential". In async code (`asyncdispatch`, chronos), give each concurrent task its own logical index in `0 ..< threads` and use it as `thread` in `begin`/`finish`/`record`. Call `begin` right before the `await` of the operation and `finish` right after it returns. Each task must be sequential (one open operation at a time), as with threads. The recorder is only available with `--threads:on`, so compile async tests with it even when everything runs on one thread.
+The recorder does not care about OS threads, only about "who is sequential". In async code (`asyncdispatch`, chronos), give each concurrent task its own logical index in `0 ..< threads` and use it as `thread` in `begin`/`finish`/`record`. Call `begin` right before the `await` of the operation and `finish` right after it returns. Each task must be sequential (one open operation at a time), as with threads. The recorder is only available with `--threads:on`, so compile async tests with it even when everything runs on one thread. Full guide: [Async code](ASYNC.md).
 
 ## Pending operations
 

@@ -4,7 +4,7 @@
 ## sequential explanation, which is how a lost wakeup becomes visible to the
 ## checker. A `wait` that never returns stays pending and is not a violation.
 
-import std/[hashes, json]
+import std/[hashes, json, random]
 import ../model
 
 type
@@ -67,3 +67,7 @@ proc fromPayload*(n: JsonNode, t: typedesc[EventRes]): EventRes =
   of "signaled": signaled()
   of "timedOut": timedOut()
   else: raise newException(ValueError, "unknown EventRes: " & $n)
+
+proc genEventOp*(rng: var Rand, thread, index: int): EventOp =
+  ## Default generator (P3): signal or wait, 50% each.
+  if rng.rand(1) == 0: signal() else: wait()

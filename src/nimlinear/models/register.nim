@@ -1,6 +1,6 @@
 ## `Register` model: read, write, cas. See docs/MODELS.md#register.
 
-import std/[hashes, json]
+import std/[hashes, json, random]
 import ../model
 
 type
@@ -60,3 +60,19 @@ proc fromPayload*(n: JsonNode, t: typedesc[RegOp]): RegOp =
   of "write": write(n["value"].getInt)
   of "cas": cas(n["expected"].getInt, n["desired"].getInt)
   else: raise newException(ValueError, "unknown RegOp: " & $n)
+
+proc randomRegisterOp*(rng: var Rand, thread, index: int, values = 3): RegOp =
+  ## Default generator (P3): read 40%, write 40% (values unique per thread
+  ## and index), cas 20%. A cas expects either a value in `0 ..< values`
+  ## or one this thread wrote earlier, so some cas can succeed.
+  case rng.rand(4)
+  of 0, 1: read()
+  of 2, 3: write(thread * 1000 + index + 1)
+  else:
+    let exp = if index > 0 and rng.rand(1) == 0: thread * 1000 + rng.rand(index - 1) + 1
+              else: rng.rand(values - 1)
+    cas(exp, thread * 1000 + index + 1)
+
+proc genRegisterOp*(rng: var Rand, thread, index: int): RegOp =
+  ## `randomRegisterOp` in the signature `runRounds` expects.
+  randomRegisterOp(rng, thread, index)

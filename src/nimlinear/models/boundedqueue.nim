@@ -1,6 +1,6 @@
 ## `BoundedQueue` model: enqueue, dequeue, close. See docs/MODELS.md#boundedqueue.
 
-import std/[hashes, json]
+import std/[hashes, json, random]
 import ../model
 
 type
@@ -119,3 +119,14 @@ proc fromPayload*(n: JsonNode, t: typedesc[QueueRes]): QueueRes =
   of "value": valueRes(n["value"].getInt)
   of "empty": emptyRes()
   else: raise newException(ValueError, "unknown QueueRes: " & $n)
+
+proc randomQueueOp*(rng: var Rand, thread, index: int, closePercent = 0): QueueOp =
+  ## Default generator (P3): enqueue or dequeue, 50% each (values unique per
+  ## thread and index); `closePercent` of operations are `close`.
+  if closePercent > 0 and rng.rand(99) < closePercent: close()
+  elif rng.rand(1) == 0: enqueue(thread * 1000 + index + 1)
+  else: dequeue()
+
+proc genQueueOp*(rng: var Rand, thread, index: int): QueueOp =
+  ## `randomQueueOp` without `close`, in the signature `runRounds` expects.
+  randomQueueOp(rng, thread, index)

@@ -47,6 +47,8 @@ Do not record a long stress run. Use many small rounds; `runRounds` (`--threads:
 | `budget` | see [Budget](API.md#budget) | |
 | `seed` | fixed | the same seed gives the same operations |
 
+For a shipped model, the default generator replaces `genOp` (for example `genMapOp`, see [Models](MODELS.md#default-operation-generators)). For async code, see [Async](ASYNC.md).
+
 You write four procedures: `setup` (fresh object per round, in a known state), `genOp` (one operation, from the round's seeded generator), `exec` (runs one operation on the real object and returns the result), and optionally `teardown`.
 
 ```nim

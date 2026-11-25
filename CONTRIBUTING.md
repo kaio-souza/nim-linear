@@ -19,7 +19,7 @@ src/
     shrink.nim              # shrink (M16)
     recorder.nim            # Recorder, record; only with --threads:on (M7)
     rounds.nim              # runRounds; only with --threads:on (M17)
-    models/                 # Register, EventFlag, BoundedQueue, CircuitBreaker
+    models/                 # Register, EventFlag, BoundedQueue, CircuitBreaker, Map, Stack, Semaphore
     perturb.nim             # optional, M12; not imported by the core
     schedule.nim            # optional, M13; not imported by the core
 tests/
@@ -30,7 +30,7 @@ tests/
   golden/                   # expected report output for each fixture
   oracle/                   # brute-force oracle and history generator (M6)
   measure/                  # memory harness (M4); bench.nim (M23, --check runs in CI);
-                            #   porcupine/ (Go, comparison only, not in CI)
+                            #   rounds_cost.nim (R6, R7); porcupine/ (Go, comparison only, not in CI)
 examples/                   # programs that run in CI (M8)
 docs/
   MEASUREMENTS.md           # measured memory and states (M4)
@@ -103,9 +103,9 @@ A milestone (M0, M1…) is a unit of work, not a version (see [Releasing](#relea
 
 Each item is a unit of work with the same rules as the milestones above. Items that change the public API or the JSON format are marked **breaking** and need an entry in [Decisions](docs/DECISIONS.md) before the code.
 
-- [ ] **P1. Async usage guide.** Document how to record and check code that runs under async (`asyncdispatch`, Chronos): tasks that migrate between OS threads, `begin` and `finish` on different threads, what counts as an operation boundary. Example in `examples/`.
-- [ ] **P2. More shipped models**: `Map` (with `partition` by key), `Stack`, `Semaphore`, each with JSON hooks, a model test and an example.
-- [ ] **P3. Default operation generator.** For each shipped model, a generator that draws operations from the model's own types, so simple tests need no `genOp`. Manual `genOp` stays the default for custom models. No new dependency (D-01).
+- [x] **P1. Async usage guide.** Document how to record and check code that runs under async (`asyncdispatch`, Chronos): tasks that migrate between OS threads, `begin` and `finish` on different threads, what counts as an operation boundary. Example in `examples/`. **Done:** [`docs/ASYNC.md`](docs/ASYNC.md), [`examples/async_counter.nim`](examples/async_counter.nim).
+- [x] **P2. More shipped models**: `Map` (with `partition` by key), `Stack`, `Semaphore`, each with JSON hooks, a model test and an example. **Done:** `nimlinear/models/{map,stack,semaphore}`, tests in `tests/tmodels.nim`, examples `examples/{map,stack,semaphore}_race.nim`.
+- [x] **P3. Default operation generator.** For each shipped model, a generator that draws operations from the model's own types, so simple tests need no `genOp`. Manual `genOp` stays the default for custom models. No new dependency (D-01). **Done:** `genRegisterOp`, `genEventOp`, `genQueueOp`, `genMapOp`, `genStackOp`, `genSemaphoreOp` (with tunable `random*Op` variants); none for `CircuitBreaker` (a `report` needs the permit of an earlier `acquire`).
 - [ ] **P4. Shrink with replay** (needs a Decisions entry first). After the current shrink, re-run the real code on the reduced scenario, under the scheduler when one is used, and keep a removal only if the failure reproduces. Deterministic for a given seed. Optional flag; the history-only shrink stays the default.
 - [ ] **P5. Specifications with unbounded results.** Decide how to model results drawn from an open set (for example, any free id), such as a predicate on the observed result. Requires a Decisions entry and, if it changes `outcomes`, a **breaking** note.
 - [ ] **P6. Interception of `Lock` and atomics** (large, after real use). Switch points for the primitives under test without manual `perturb()`, keeping determinism under the scheduler. Not started until P4 and real use show the need.

@@ -100,7 +100,7 @@ Objects whose result depends on the clock (timeouts, TTL, limiters) cannot read 
 
 ## Example models
 
-The models below ship with the library. They serve to test the checker and as a starting point. All four are implemented, in `nimlinear/models/*` (`register`, `eventflag`, `boundedqueue`, `circuitbreaker`).
+The models below ship with the library. They serve to test the checker and as a starting point. All are implemented, in `nimlinear/models/*` (`register`, `eventflag`, `boundedqueue`, `circuitbreaker`, `map`, `stack`, `semaphore`).
 
 | Model | State | Operations | Use |
 |---|---|---|---|
@@ -108,6 +108,9 @@ The models below ship with the library. They serve to test the checker and as a 
 | [`EventFlag`](#eventflag-and-lost-wakeup) | `signaled: bool` | `signal`, `wait` (with timeout) | lost wakeup (M3) |
 | [`BoundedQueue`](#boundedqueue) | `items: seq[int]`, `capacity`, `closed` | `enqueue`, `dequeue`, `close` | queue/channel; end-to-end example in [`examples/queue_race.nim`](../examples/queue_race.nim) (M8) |
 | [`CircuitBreaker`](#circuitbreaker) | `phase`, `failures`, `probeOut`, `cooledDown`, `threshold` | `acquire`, `report` | example of the [state machine with permits](#state-machines-with-permits) pattern |
+| [`Map`](#map) | `entries: seq[(key, value)]` | `get`, `put`, `delete` | key-value stores; defines `partition` by key; [`examples/map_race.nim`](../examples/map_race.nim) |
+| [`Stack`](#stack) | `items: seq[int]`, `capacity` (0 = unbounded) | `push`, `pop` | LIFO structures; [`examples/stack_race.nim`](../examples/stack_race.nim) |
+| [`Semaphore`](#semaphore) | `permits`, `max` | `tryAcquire`, `release` | counting semaphores, permit pools; [`examples/semaphore_race.nim`](../examples/semaphore_race.nim) |
 
 None of these models gets special treatment from the checker. They use the same contract as any model of yours; the library does not know what a queue or a breaker is.
 
@@ -245,6 +248,56 @@ func step(m: typedesc[QueueModel], s: QueueState, op: QueueOp):
 ```
 
 A `seq` in the state is fine for small histories; `hash` must cover the contents, not just the length. Note that the result's `==` ignores `value` outside `qrValue`: fields with no meaning in a given variant branch must not decide equality.
+
+### Map
+
+```nim
+import nimlinear/models/map
+# MapOp: get(key), put(key, value), delete(key); key and value are int
+# MapRes: found(value) or missing(); put and delete return the PREVIOUS entry
+# MapState: initMapState([(1, 10), (2, 20)])  (empty: initMapState())
+```
+
+`put` and `delete` return the entry before the operation, as most concurrent maps do (`put` returning the old value makes a lost update visible: two puts on an empty key cannot both report `missing`). If your map's `put` returns nothing, map it to a result your `exec` always fills (for example, record `get` separately) or write your own model from this one.
+
+The model defines `partition` (the key): keys are independent, so use `checkPartitioned`, or `RoundsConfig(partitioned: true)` in `runRounds`. Each key is then checked alone, which is much faster for histories over several keys. `entries` stays sorted by key, so equal maps have equal states (and hashes).
+
+### Stack
+
+```nim
+import nimlinear/models/stack
+# StackOp: push(v), pop()
+# StackRes: pushed(), full(), popped(v), empty()
+# StackState(capacity: 0)  # 0 = unbounded; items: bottom first
+```
+
+The `why` of a pop names the top the model expected, so a report shows which value should have come out. A FIFO implementation, a duplicated pop and a lost push are all rejected (see `tests/tmodels.nim`).
+
+### Semaphore
+
+```nim
+import nimlinear/models/semaphore
+# SemOp: tryAcquire(), release()
+# SemRes(ok: bool): tryAcquire got a permit / release was accepted
+# initSemState(max)  # all permits free
+```
+
+Non-blocking operations only. A blocking `acquire` that never returns would stay pending, which is not a violation (see [Pending operations](HISTORY.md#pending-operations)); record a timed acquire as `tryAcquire` with its outcome. A `release` when all `max` permits are already free is refused (`ok = false`); if your semaphore allows over-release (like `std/locks`-based ones that just increment), change `step` for `release` to always succeed and let `max` grow, or the test will flag it.
+
+### Default operation generators
+
+Every shipped model except `CircuitBreaker` has a generator with the signature `runRounds` expects, so a simple test needs no `genOp` (P3):
+
+| Model | Generator | Draws | Tunable variant |
+|---|---|---|---|
+| `Register` | `genRegisterOp` | read 40%, write 40%, cas 20% | `randomRegisterOp(rng, thread, index, values = 3)` |
+| `EventFlag` | `genEventOp` | signal 50%, wait 50% | |
+| `BoundedQueue` | `genQueueOp` | enqueue 50%, dequeue 50% | `randomQueueOp(rng, thread, index, closePercent = 0)` |
+| `Map` | `genMapOp` | key in `0 ..< 3`; get 40%, put 40%, delete 20% | `randomMapOp(rng, thread, index, keys = 3)` |
+| `Stack` | `genStackOp` | push 50%, pop 50% | |
+| `Semaphore` | `genSemaphoreOp` | `tryAcquire`, `release`, alternating per thread | |
+
+Written values (write, enqueue, put, push) are unique per `thread` and `index` (`thread * 1000 + index + 1`), so a duplicated or lost value is visible in the history. The same seed gives the same operations. To change the mix, wrap the tunable variant in your own `proc (rng: var Rand, thread, index: int): Op`. `CircuitBreaker` has none: a `report` must carry the permit of an earlier `acquire` of the same thread, which a random draw cannot know; write its `genOp` with the test.
 
 ## State machines with permits
 

@@ -108,7 +108,7 @@ For any object, you write:
 
 Then `runRounds(RoundsConfig(...), initState, MyModel, setup, genOp, exec, teardown)` does the rest. The step-by-step adoption, with acceptance criteria, is in the [Usage guide](docs/GUIDE.md).
 
-To write the sequential specification of your object, see [Sequential models](docs/MODELS.md). Shipped models: `Register`, `EventFlag`, `BoundedQueue`, `CircuitBreaker` (in `nimlinear/models/*`).
+To write the sequential specification of your object, see [Sequential models](docs/MODELS.md). Shipped models: `Register`, `EventFlag`, `BoundedQueue`, `CircuitBreaker`, `Map`, `Stack`, `Semaphore` (in `nimlinear/models/*`); all but `CircuitBreaker` come with a default operation generator, so a simple test needs no `genOp` ([Models](docs/MODELS.md#default-operation-generators)).
 
 ## Examples
 
@@ -143,6 +143,8 @@ Read it this way: operations `1`, `4` and `7` form the longest prefix that the m
 
 - **Concurrent data structures**: a bounded queue or channel where `dequeue` can deliver the same element twice ([model](docs/MODELS.md#boundedqueue)).
 - **Locks and signals**: an event flag where a `signal` can be lost while a `wait` sleeps ([model](docs/MODELS.md#eventflag-and-lost-wakeup)).
+- **Maps, stacks and semaphores**: a key-value map that loses an update, a stack that pops the same value twice, a semaphore that hands out its last permit twice ([models](docs/MODELS.md#map)).
+- **Async code**: tasks under `asyncdispatch` or Chronos, one recorder index per task ([Async](docs/ASYNC.md)).
 - **Compare-and-swap code**: a register with `read`, `write` and `cas` ([model](docs/MODELS.md)).
 - **State machines with permits**: a circuit breaker or limiter that hands out more permits than its state allows ([model](docs/MODELS.md#circuitbreaker)).
 - **Time-dependent objects**: caches and breakers with a cool-down, tested with a fake clock recorded as `tick` events ([Time](docs/MODELS.md#time)).
@@ -203,6 +205,7 @@ None open. In 0.1.0 (fixed in the next release, see the [Changelog](CHANGELOG.md
 | [API](docs/API.md) | types, procedures, verdicts, budget, errors | you write code that calls the library |
 | [Sequential models](docs/MODELS.md) | how to write a specification; shipped models | you write a new model |
 | [History](docs/HISTORY.md) | recording, event order, time, JSON format | you record or save a history |
+| [Async code](docs/ASYNC.md) | recording tasks under asyncdispatch or Chronos | your code uses `await` |
 | [Decisions](docs/DECISIONS.md) | design decisions, with reason and consequence | you question a choice |
 | [Comparison](docs/COMPARISON.md) | differences from Porcupine, Knossos, Lincheck | you choose between tools |
 | [Measurements](docs/MEASUREMENTS.md) | memory, states and time on measured histories | you size a test |
