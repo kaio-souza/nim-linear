@@ -88,6 +88,7 @@ Rules:
 - On failure, `runRounds` saves the shrunk history as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`; `r.original` keeps the recorded one. To replay it, see [History](HISTORY.md#saving-a-failed-history).
 - To start rounds from a specific state (queue almost full), prepare it in `setup` and pass the matching state as `init`. To vary it per round, pass `init` as `proc (round: int): S` and take `RoundInfo` in `setup` to build the same state.
 - If `exec` raises, the round fails and `r.error` says which thread and operation.
+- Leave `steps` at 0 with `schedule: true`: a guessed `steps` larger than the real switch points of a round silently weakens the scheduler.
 - Under the scheduler, `replayShrink: true` also reduces the failing scenario by running the real code again, and `r.scenario` with `runScenario` replays it exactly ([API](API.md#round-harness-m17)).
 - Without the harness, record by hand with `Recorder` (`begin`/`finish` or `record`): see [History](HISTORY.md#concurrent-recording-recorder).
 
@@ -105,7 +106,7 @@ Inject a known bug on purpose (for example, remove the capacity check, or replac
 
 If the bug you care about has a narrow window (between reading and changing shared state), put `perturb()` at those points in the object under test and compile the test with `-d:nimlinearPerturb` (D-18). Without the flag, `perturb()` generates no code. Confirm step 5 again: the injected bug should fail in fewer rounds. Example: [`examples/queue_perturb.nim`](../examples/queue_perturb.nim).
 
-To make rounds reproducible, run them under a `Scheduler` from `nimlinear/schedule`: create it in a `setup` that takes a `RoundInfo` (`proc setup(q: var MyQueue, info: RoundInfo)`) with `initScheduler(threads, info.seed)`, so each round gets its own interleaving, remove it in `teardown`, and register the threads through `ThreadHooks`. With the same seed, a round produces the same history byte for byte. Replace the object's locks with `SchedLock`, so that `perturb()` can also go inside critical sections (see [API](API.md#nimlinearschedule-m13)). Examples: [`examples/queue_pct.nim`](../examples/queue_pct.nim), [`tests/trounds.nim`](../tests/trounds.nim).
+To make rounds reproducible, run them under the PCT scheduler: `RoundsConfig(schedule: true, depth: 3)` does it for you and calibrates `steps` (D-29). To wire it yourself, create a `Scheduler` from `nimlinear/schedule` in a `setup` that takes a `RoundInfo` (`proc setup(q: var MyQueue, info: RoundInfo)`) with `initScheduler(threads, info.seed)`, so each round gets its own interleaving, remove it in `teardown`, and register the threads through `ThreadHooks`. With the same seed, a round produces the same history byte for byte. Replace the object's locks with `SchedLock`, so that `perturb()` can also go inside critical sections. To avoid editing the object at all, import `nimlinear/intercept` instead of `std/atomics`/`std/locks` in a test build: every atomic write and lock acquire becomes a switch point ([API](API.md#nimlinearintercept-p6)) (see [API](API.md#nimlinearschedule-m13)). Examples: [`examples/queue_pct.nim`](../examples/queue_pct.nim), [`tests/trounds.nim`](../tests/trounds.nim).
 
 ## Step 6: CI
 

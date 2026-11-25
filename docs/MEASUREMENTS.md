@@ -112,6 +112,33 @@ Recording costs ~100–140 ns per operation, mostly the shared atomic `seq` coun
 
 The effect on interleavings is large: recording makes this race about **8× less frequent**, because the time spent recording is time outside the racy window, and the shared counter partly serializes the threads. Consequence: rely on `perturb()` points and the PCT scheduler (Guide, step 5b) to open narrow windows, not on raw thread overlap; and always confirm with an injected bug that the test fails (Guide, step 5). This measures the most contended case (back-to-back operations); with real operations that take longer than the recording, the relative effect is smaller.
 
+## Intercepted atomics and locks (P6)
+
+Validation of `nimlinear/intercept` (D-26) on a real library, `nim-circuit-breaker` (lock-free fast paths on `Atomic` fields plus one `Lock`), on a local copy: its two `std/atomics`/`std/locks` imports switched behind `-d:nimlinearIntercept`, rounds of 3 threads × 4 operations (its existing model, `setup` and generator) under the PCT scheduler, `steps = 200`.
+
+### 2026-11-24
+
+- Nim 2.2.4, `--mm:orc -d:release --threads:on`, Linux amd64, 8 logical CPUs
+
+| Breaker | Rounds | OS scheduler, no interception | PCT + intercept, depth 2 | depth 3 | depth 4 |
+|---|---|---|---|---|---|
+| as released | 2 000 | 0 failures | | 0 | 0 |
+| injected bug: HalfOpen probe check and increment in two critical sections | 2 000 | 0, 0, 1 (three runs) | 2 | 4 | 12 |
+
+**`steps` matters more than `depth`.** The table above used `steps = 200`. Counting the switch points (`Scheduler.stepsTaken`) gave a median of **11 per round** (min 6, max 21), so almost every PCT change point fell after the round ended. Same injected bug, 2 000 rounds:
+
+| `steps` | depth 3 | depth 4 |
+|---|---|---|
+| 200 | 4 | 12 |
+| 30 | 65 | 100 |
+| 12 (≈ measured) | **150** | **215** |
+
+The breaker as released still passes with `steps = 12`, depth 4 (0 failures in 2 000 rounds). This led to D-29: `RoundsConfig(schedule: true)` calibrates `steps` on round 1.
+
+**Replay shrink with calibrated steps** (racy counter, 3 × 12 operations, 200 rounds, seeds 1–10, all fail in round 1): `steps = 30` kept 20 (depth 3) and 18 (depth 4) of 36 operations on average; calibrated `steps` kept 19 and 18. No gain: removing operations moves the switch points whatever `steps` is (D-29, consequence).
+
+With interception the failing rounds are the same on every run (reproducible from the seed); under the OS scheduler the bug showed up once in 6 000 rounds and cannot be replayed. 2 000 scheduled rounds took about 0.2 s of main-thread CPU. No code of the breaker was changed besides the two imports, and no `perturb()` was added.
+
 ## Limits of these numbers
 
 - The memory table uses one shape only (`tests/measure/measure.nim`, an easy one; see shapes A and B for worst cases). Histories where operations overlap more widely (long operations spanning many rounds of other threads) or models with larger state spaces (`BoundedQueue`) can visit far more configurations. The Budget table keeps its conservative estimates until such shapes are measured too.

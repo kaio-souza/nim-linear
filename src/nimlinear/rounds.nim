@@ -27,6 +27,9 @@ type
     shrink*: bool = true        ## shrink the failing history (M16)
     shrinkTimeout*: Duration    ## overall limit for `shrink` (and replay); zero = none
     replayShrink*: bool         ## also shrink by re-running the real code (D-27); needs deterministic rounds
+    schedule*: bool             ## run every round under the PCT scheduler (D-29); needs -d:nimlinearPerturb
+    depth*: int = 3             ## PCT depth when `schedule`
+    steps*: int                 ## PCT steps when `schedule`; 0 = calibrate on round 1 (D-29)
     saveDir*: string            ## where to save it; "" = getTempDir()
     name*: string = "nimlinear" ## file name prefix
 
@@ -56,6 +59,7 @@ type
     savedTo*: string             ## path of the saved (shrunk) history, "" if none
     scenario*: seq[seq[Op]]      ## operations per thread of the failing round (reduced by replay)
     replay*: string              ## what `replayShrink` did, "" if not requested
+    steps*: int                  ## PCT steps used when `schedule` (calibrated if `cfg.steps == 0`)
     saveError*: string           ## why saving failed, "" if it did not
 
   Ctx[Obj, Op, Res] = object
@@ -66,6 +70,14 @@ type
     tid: int
     exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.}
     hooks: ThreadHooks
+
+when defined(nimlinearPerturb):
+  import ./schedule
+  var gRoundSched: Scheduler   # the scheduler of `RoundsConfig.schedule`
+  proc schedEnter(tid: int) {.nimcall, gcsafe, raises: [].} =
+    {.cast(gcsafe).}: gRoundSched.enter(tid)
+  proc schedLeave() {.nimcall, gcsafe, raises: [].} =
+    {.cast(gcsafe).}: gRoundSched.leave()
 
 proc worker[Obj, Op, Res](c: Ctx[Obj, Op, Res]) {.thread.} =
   if c.hooks.enter != nil: c.hooks.enter(c.tid)
@@ -86,6 +98,11 @@ proc validate*(cfg: RoundsConfig) =
   if cfg.threads < 1: raise newException(ValueError, "RoundsConfig.threads must be >= 1, got " & $cfg.threads)
   if cfg.opsPerThread < 0: raise newException(ValueError, "RoundsConfig.opsPerThread must be >= 0, got " & $cfg.opsPerThread)
   if cfg.rounds < 0: raise newException(ValueError, "RoundsConfig.rounds must be >= 0, got " & $cfg.rounds)
+  if cfg.schedule:
+    when not defined(nimlinearPerturb):
+      raise newException(ValueError, "RoundsConfig.schedule needs -d:nimlinearPerturb")
+    if cfg.depth < 1: raise newException(ValueError, "RoundsConfig.depth must be >= 1, got " & $cfg.depth)
+    if cfg.steps < 0: raise newException(ValueError, "RoundsConfig.steps must be >= 0, got " & $cfg.steps)
 
 proc mix64(x: uint64): uint64 =
   # splitmix64 finalizer: a bijection on uint64 with good avalanche.
@@ -113,15 +130,27 @@ proc genOps[Op](cfg: RoundsConfig, round: int,
 proc runOps[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[seq[Op]], setup: SP,
                               exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
                               teardown: proc (obj: var Obj) {.nimcall.},
-                              hooks: ThreadHooks): (History[Op, Res], string) =
+                              hooks: ThreadHooks): (History[Op, Res], string, int) =
+  ## Runs one round; returns the history, the first `exec` error ("" if
+  ## none) and the switch points taken under `cfg.schedule` (0 otherwise).
+  ## Under `cfg.schedule`, `cfg.steps` must already be resolved (> 0).
   if ops.len != cfg.threads:
     raise newException(ValueError, "scenario has " & $ops.len &
       " thread lists, RoundsConfig.threads is " & $cfg.threads)
   let info = RoundInfo(round: round, seed: roundSeed(cfg.seed, round))
   var ops = ops
   var obj: Obj
+  if cfg.schedule and (hooks.enter != nil or hooks.leave != nil):
+    # checked before `setup`, which may install things `teardown` removes
+    raise newException(ValueError, "RoundsConfig.schedule installs its own ThreadHooks; pass none")
   when compiles(setup(obj, info)): setup(obj, info)
   else: setup(obj)
+  var hooks = hooks
+  var taken = 0
+  if cfg.schedule:
+    when defined(nimlinearPerturb):
+      gRoundSched.initScheduler(cfg.threads, info.seed, cfg.depth, max(1, cfg.steps))
+      hooks = ThreadHooks(enter: schedEnter, leave: schedLeave)
   var rec = newRecorder[Op, Res](cfg.threads)
   var errs = newSeq[string](cfg.threads)
   # Thread objects in fixed shared memory (not a seq): their addresses must
@@ -140,13 +169,34 @@ proc runOps[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[seq[Op]], 
     for t in 0 ..< started: joinThread(ths[t])
     for t in 0 ..< cfg.threads: `=destroy`(ths[t])
     deallocShared(ths)
+    when defined(nimlinearPerturb):
+      if cfg.schedule:
+        taken = gRoundSched.stepsTaken
+        gRoundSched.deinitScheduler()
     if teardown != nil: teardown(obj)
   var err = ""
   for e in errs:
     if e.len > 0:
       err = e
       break
-  (rec.snapshot(), err)
+  (rec.snapshot(), err, taken)
+
+const calibrationSteps = high(int) div 2
+  ## steps while calibrating: change points fall after the round ends, so the
+  ## run is plain priority order and only counts the switch points.
+
+proc resolveSteps[Obj, Op, Res, SP](cfg: RoundsConfig, ops: seq[seq[Op]], setup: SP,
+                                    exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
+                                    teardown: proc (obj: var Obj) {.nimcall.},
+                                    hooks: ThreadHooks): RoundsConfig =
+  ## D-29: with `schedule` and `steps == 0`, runs `ops` once as round 1 to
+  ## count the switch points and uses that count as `steps`.
+  result = cfg
+  if cfg.schedule and cfg.steps == 0:
+    var c = cfg
+    c.steps = calibrationSteps
+    let (_, _, taken) = runOps(c, 1, ops, setup, exec, teardown, hooks)
+    result.steps = max(1, taken)
 
 proc runRoundImpl[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, setup: SP,
                                     genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.},
@@ -154,7 +204,9 @@ proc runRoundImpl[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, setup: SP,
                                     teardown: proc (obj: var Obj) {.nimcall.},
                                     hooks: ThreadHooks): (History[Op, Res], string) =
   validate(cfg)
-  runOps(cfg, round, genOps(cfg, round, genOp), setup, exec, teardown, hooks)
+  let c = resolveSteps(cfg, genOps(cfg, 1, genOp), setup, exec, teardown, hooks)
+  let (h, err, _) = runOps(c, round, genOps(cfg, round, genOp), setup, exec, teardown, hooks)
+  (h, err)
 
 proc runScenario*[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[seq[Op]], setup: SP,
                                     exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
@@ -165,8 +217,11 @@ proc runScenario*[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[seq[
   ## `opsPerThread` is ignored. `setup` receives the same `RoundInfo` as
   ## round `round` of `runRounds`, so a scheduler gets the same seed. Raises
   ## `ExecError` like `runRound`, `ValueError` for a wrong number of lists.
+  ## With `schedule` and `steps == 0`, `steps` is calibrated on `ops`
+  ## itself; to replay a round of `runRounds`, pass its `RoundsResult.steps`.
   validate(cfg)
-  let (h, err) = runOps(cfg, round, ops, setup, exec, teardown, hooks)
+  let c = resolveSteps(cfg, ops, setup, exec, teardown, hooks)
+  let (h, err, _) = runOps(c, round, ops, setup, exec, teardown, hooks)
   if err.len > 0: raise newException(ExecError, err)
   h
 
@@ -254,7 +309,7 @@ proc replayShrink[S, Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[s
   template expired(): bool = dl.expired
   # 1. Determinism is checked, not assumed: the same scenario again must
   #    give the same history, byte for byte.
-  let (h2, err2) = runOps(cfg, round, ops, setup, exec, teardown, hooks)
+  let (h2, err2, _) = runOps(cfg, round, ops, setup, exec, teardown, hooks)
   if err2.len > 0 or h2.toJsonLines() != h.toJsonLines():
     return (ops, h, v, "skipped: the round is not deterministic (running it again gave " &
                        "another history); run it under nimlinear/schedule")
@@ -264,7 +319,7 @@ proc replayShrink[S, Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[s
   var curV = v
   var timedOut = false
   template attempt(cand: seq[seq[Op]]): bool =
-    let (ch, cerr) = runOps(cfg, round, cand, setup, exec, teardown, hooks)
+    let (ch, cerr, _) = runOps(cfg, round, cand, setup, exec, teardown, hooks)
     var kept = false
     if cerr.len == 0:
       let cv = checkWith(cfg, ch, init, model)
@@ -314,6 +369,9 @@ proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc
   validate(cfg)
   result.seed = cfg.seed
   result.passed = true
+  let cfg = (if cfg.rounds > 0: resolveSteps(cfg, genOps(cfg, 1, genOp), setup, exec, teardown, hooks)
+             else: cfg)
+  result.steps = (if cfg.schedule: cfg.steps else: 0)
   template check(h, st): untyped =
     checkWith(cfg, h, st, model)
   for r in 1 .. cfg.rounds:
@@ -323,7 +381,7 @@ proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc
     else:
       let st = init
     let ops = genOps(cfg, r, genOp)
-    let (h, err) = runOps(cfg, r, ops, setup, exec, teardown, hooks)
+    let (h, err, _) = runOps(cfg, r, ops, setup, exec, teardown, hooks)
     let v = check(h, st)
     if err.len == 0 and v.kind == vkLinearizable: continue
     result.passed = false
@@ -362,8 +420,10 @@ proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc
 proc describe*[Op, Res](r: RoundsResult[Op, Res]): string =
   ## Summary for test output: rounds, seed, error, report with timeline, saved file.
   if r.passed:
-    return "linearizable in all " & $r.rounds & " rounds (seed " & $r.seed & ")\n"
-  result = "failed in round " & $r.rounds & " (seed " & $r.seed & ")"
+    return "linearizable in all " & $r.rounds & " rounds (seed " & $r.seed &
+      (if r.steps > 0: ", PCT steps " & $r.steps else: "") & ")\n"
+  result = "failed in round " & $r.rounds & " (seed " & $r.seed &
+    (if r.steps > 0: ", PCT steps " & $r.steps else: "") & ")"
   if r.history.events.len < r.original.events.len:
     result.add ", shrunk from " & $r.original.events.len & " to " & $r.history.events.len & " events"
   if r.error.len > 0:

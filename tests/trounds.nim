@@ -232,3 +232,26 @@ else:
     test "P4: runScenario checks the number of thread lists":
       expect ValueError:
         discard runScenario(RoundsConfig(threads: 2), 1, @[@[COp(inc: true)]], setupBoom2, execPlain)
+
+    test "D-29: built-in scheduler, calibrated steps, replay with runScenario":
+      racy = true
+      proc setupPlain(c: var Counter) = c.racy = racy
+      let cfg = RoundsConfig(rounds: 200, opsPerThread: 12, saveDir: dir, name: "builtin",
+                             schedule: true, depth: 4)
+      let r = runRounds(cfg, CState(), CModel, setupPlain, genOp, exec)
+      check not r.passed
+      check r.steps > 0
+      let r2 = runRounds(cfg, CState(), CModel, setupPlain, genOp, exec)
+      check r2.rounds == r.rounds and r2.steps == r.steps          # deterministic
+      var c = cfg
+      c.steps = r.steps
+      let again = runScenario(c, r.rounds, r.scenario, setupPlain, exec)
+      check again.toJsonLines == r.original.toJsonLines
+
+    test "D-29: schedule rejects user hooks and bad depth":
+      expect ValueError:
+        discard runRounds(RoundsConfig(rounds: 1, schedule: true), CState(), CModel,
+                          setupCounter, genOp, exec, teardownCounter, hooks)
+      expect ValueError:
+        discard runRounds(RoundsConfig(rounds: 1, schedule: true, depth: 0), CState(), CModel,
+                          setupBoom2, genOp, execPlain)

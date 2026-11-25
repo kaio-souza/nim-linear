@@ -304,6 +304,9 @@ type RoundsConfig* = object
   shrink* = true                 # shrink the failing history
   shrinkTimeout*: Duration       # overall limit for shrink and replay; zero = none
   replayShrink*: bool            # also shrink by re-running the real code (D-27)
+  schedule*: bool                # every round under the PCT scheduler (D-29); needs -d:nimlinearPerturb
+  depth* = 3                     # PCT depth when schedule
+  steps*: int                    # PCT steps when schedule; 0 = calibrate on round 1
   saveDir*: string               # "" = getTempDir()
   name* = "nimlinear"            # file name prefix
 
@@ -331,6 +334,8 @@ proc describe*[Op, Res](r: RoundsResult[Op, Res]): string
 - `partitioned = true` checks with `checkPartitioned` (and shrinks with it); it raises `ValueError` if the model has no `partition`. `timeout` is passed to each check and, like in the checker, makes the verdict machine-dependent.
 - An exception (`CatchableError`) raised by `exec` fails the round: the operation stays pending, that thread runs no more operations, `ThreadHooks.leave` and `teardown` still run, and `RoundsResult.error` holds `thread, operation index, call, exception name and message`. `runRound` raises `ExecError` instead. A `Defect` is not caught.
 - It stops at the first round that fails (`exec` raised, or not `vkLinearizable`), shrinks the history (unless inconclusive or `shrink = false`; bounded by `shrinkTimeout`), and saves it as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`; if that file exists, `-2`, `-3`... is appended, so an earlier file is never overwritten. If saving fails, `savedTo` is `""` and `saveError` says why.
+
+**Built-in scheduler (D-29).** With `schedule = true` (compile with `-d:nimlinearPerturb`), every round runs under a PCT `Scheduler` seeded with `RoundInfo.seed`: installed after `setup`, removed before `teardown`, threads registered for you (passing `ThreadHooks` too raises `ValueError`). `steps = 0` calibrates: round 1's operations run once and the switch points counted (`Scheduler.stepsTaken`) become `steps`, returned in `RoundsResult.steps` and shown by `describe`. To replay a round with `runScenario`, pass that `steps`.
 
 **Replay shrink (D-27).** With `replayShrink = true`, after the history-only shrink, `runRounds` shrinks the failing round's **scenario** (its operations per thread) by running the real code again:
 
@@ -404,6 +409,29 @@ template withLock*(l: var SchedLock, body: untyped)
 ```
 
 - Example: [`examples/queue_pct.nim`](../examples/queue_pct.nim); `SchedLock` test: `tests/tschedule.nim`.
+
+### `nimlinear/intercept` (P6)
+
+Switch points on atomics and locks without `perturb()` in the code under test (D-26). A drop-in replacement for `std/atomics` and `std/locks`; the code under test switches its import in one place, behind a define of its own:
+
+```nim
+when defined(nimlinearIntercept): import nimlinear/intercept
+else: import std/[atomics, locks]
+```
+
+Compile the test with `-d:nimlinearIntercept -d:nimlinearPerturb` and run rounds under a `Scheduler` (as for `perturb()`). Production builds never import nimlinear.
+
+- Without `-d:nimlinearPerturb`: a plain re-export of both modules, no cost.
+- With it: a `perturb()` before every atomic write or read-modify-write (`store`, `exchange`, `compareExchange`, `compareExchangeWeak`, `fetchAdd`, `fetchSub`, `fetchAnd`, `fetchOr`, `fetchXor`, `atomicInc`, `atomicDec`, `+=`, `-=`, `testAndSet`, `clear`), and `Lock` is a `SchedLock` (`initLock`, `deinitLock`, `acquire`, `tryAcquire`, `release`, `withLock` keep their names).
+- Loads get no point; plain (non-atomic) fields are not intercepted, so a race on a plain field shows up only if an intercepted operation sits inside its window.
+- `Cond` is not intercepted: `wait` needs a `std/locks` `Lock`, so code that uses `Cond` with an intercepted `Lock` does not compile. Keep those locks from `std/locks`.
+- Use `RoundsConfig(schedule: true)`: `steps` is calibrated to the real number of switch points of a round (D-29). If you wire the scheduler yourself, `steps` must be close to `Scheduler.stepsTaken` of a typical round, **not larger**: change points beyond the end of the round never fire, and a guess of 200 against a real 11 made an injected bug 18 to 37 times rarer ([Measurements](MEASUREMENTS.md#intercepted-atomics-and-locks-p6)). `depth` 3 to 4.
+- **Plain fields are not intercepted.** A race on a non-atomic field (for example a counter read under one lock and written under another, or read without the lock) is explored only if an intercepted operation or a `perturb()` falls inside its window. Put a `perturb()` between the read and the write of such fields:
+  ```nim
+  let n = b.consecutive          # plain field
+  perturb()                      # the window intercept cannot see
+  b.consecutive = n + 1
+  ```
 
 ## Budget
 

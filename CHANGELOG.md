@@ -14,6 +14,8 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 - Models `Map` (get/put/delete, with `partition` by key), `Stack` (push/pop, optional capacity) and `Semaphore` (tryAcquire/release), with JSON hooks, tests and examples (P2).
 - Default operation generators for the shipped models: `genRegisterOp`, `genEventOp`, `genQueueOp`, `genMapOp`, `genStackOp`, `genSemaphoreOp`, and tunable `randomRegisterOp`, `randomQueueOp`, `randomMapOp` (P3).
+- `RoundsConfig.schedule`, `depth`, `steps`: the round harness runs every round under the PCT scheduler itself, and `steps = 0` calibrates it on round 1 (`RoundsResult.steps`); `Scheduler.stepsTaken` (D-29). A guessed `steps` larger than a round's real switch points made a bug 18–37× rarer in measurements.
+- `nimlinear/intercept`: drop-in replacement for `std/atomics` and `std/locks` that turns every atomic write and lock acquire into a switch point under `-d:nimlinearPerturb`, so code under test needs no `perturb()` (P6, D-26). `SchedLock.tryAcquire`.
 - `runScenario` (a round from explicit operations) and `RoundsConfig.replayShrink`: shrink the failing scenario by re-running the real code, only when the round is deterministic; `RoundsResult.scenario` and `replay` (P4, D-27).
 - Async usage guide, `docs/ASYNC.md`, and `examples/async_counter.nim` (P1).
 - Docs: modeling results from an open set ("any free id") with a finite pool and `outcomes` (D-28, P5).

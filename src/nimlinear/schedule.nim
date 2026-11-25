@@ -95,6 +95,12 @@ proc switchPoint() {.nimcall, gcsafe, raises: [].} =
 
 proc `=copy`*(dest: var Scheduler, src: Scheduler) {.error.}
 
+proc stepsTaken*(s: Scheduler): int =
+  ## Switch points that happened since `initScheduler` (each `perturb()`,
+  ## `SchedLock` acquire and intercepted operation of a registered thread).
+  ## Read it before `deinitScheduler` to size `steps` for the next rounds.
+  s.step
+
 proc initScheduler*(s: var Scheduler, threads: Positive, seed: int, depth = 3,
                     steps = 100) =
   ## Prepares a round for `threads` threads and installs the scheduler. `depth`
@@ -181,6 +187,17 @@ proc acquire*(l: var SchedLock) {.raises: [].} =
       s.waitingOn[tTid] = nil
       release s.lock
     l.held = true
+
+proc tryAcquire*(l: var SchedLock): bool {.raises: [].} =
+  ## Under a scheduler: a switch point, then takes the lock if it is free.
+  ## Otherwise: an ordinary `tryAcquire`.
+  {.cast(gcsafe).}:
+    let s = active()
+    if s == nil: return tryAcquire(l.lock)
+    if tRegistered: switchPoint()
+    if l.held: return false
+    l.held = true
+    true
 
 proc release*(l: var SchedLock) {.raises: [].} =
   {.cast(gcsafe).}:

@@ -22,6 +22,7 @@ src/
     models/                 # Register, EventFlag, BoundedQueue, CircuitBreaker, Map, Stack, Semaphore
     perturb.nim             # optional, M12; not imported by the core
     schedule.nim            # optional, M13; not imported by the core
+    intercept.nim           # optional, P6; drop-in std/atomics + std/locks with switch points
 tests/
   t*.nim                    # each file is a test executable (std/unittest)
   tsmoke.nim                # minimal M0 test
@@ -108,7 +109,8 @@ Each item is a unit of work with the same rules as the milestones above. Items t
 - [x] **P3. Default operation generator.** For each shipped model, a generator that draws operations from the model's own types, so simple tests need no `genOp`. Manual `genOp` stays the default for custom models. No new dependency (D-01). **Done:** `genRegisterOp`, `genEventOp`, `genQueueOp`, `genMapOp`, `genStackOp`, `genSemaphoreOp` (with tunable `random*Op` variants); none for `CircuitBreaker` (a `report` needs the permit of an earlier `acquire`).
 - [x] **P4. Shrink with replay** ([D-27](docs/DECISIONS.md#d-27-shrink-with-replay-only-for-deterministic-rounds-p4)). **Done:** `runScenario`, opt-in `RoundsConfig.replayShrink`, determinism checked by running the failing scenario again; `RoundsResult.scenario` and `replay`.
 - [x] **P5. Specifications with unbounded results.** Decide how to model results drawn from an open set (for example, any free id). **Done:** decided in [D-28](docs/DECISIONS.md#d-28-unbounded-results-stay-out-of-the-model-contract-p5): no new hook; a finite pool in the state with `outcomes`, documented in [Models](docs/MODELS.md#results-from-an-open-set). Not breaking.
-- [ ] **P6. Interception of `Lock` and atomics** (decided in [D-26](docs/DECISIONS.md#d-26-switch-points-on-atomics-and-locks-through-a-drop-in-module-p6)). `nimlinear/intercept`: drop-in re-export of `std/atomics` and `std/locks` with switch points before atomic writes and lock acquires under `-d:nimlinearPerturb`; the code under test switches its import behind its own define. Validate on the circuit breaker (real use). No longer waits for P4.
+- [x] **P6. Interception of `Lock` and atomics** ([D-26](docs/DECISIONS.md#d-26-switch-points-on-atomics-and-locks-through-a-drop-in-module-p6)). **Done:** `nimlinear/intercept` (drop-in for `std/atomics`/`std/locks`), `SchedLock.tryAcquire`; tests `tests/tintercept.nim`, `tests/tintercept_off.nim`; validated on the circuit breaker ([Measurements](docs/MEASUREMENTS.md#intercepted-atomics-and-locks-p6)).
+- [x] **P7. Scheduler calibration and built-in scheduling** (found validating P6; [D-29](docs/DECISIONS.md#d-29-scheduler-built-into-the-round-harness-with-calibrated-steps)). **Done:** `RoundsConfig.schedule`/`depth`/`steps` with `steps = 0` calibrated on round 1, `Scheduler.stepsTaken`; replay shrink re-measured (no change); plain fields not intercepted, documented with the `perturb()` pattern.
 
 Out of scope, by existing decisions: exhaustive interleaving exploration (D-07, D-02) and property-based testing integration (D-10). Relaxed memory orderings are a structural limit of a sequential-consistency checker and are only documented.
 

@@ -210,7 +210,7 @@ Status: **Proposed** (not implemented) or **Accepted**.
 
 ## D-26: switch points on atomics and locks through a drop-in module (P6)
 
-- **Status:** Accepted (not implemented)
+- **Status:** Accepted (implemented: `nimlinear/intercept`; validated on the circuit breaker, see [Measurements](MEASUREMENTS.md#intercepted-atomics-and-locks-p6))
 - **Context:** real use (a circuit breaker with lock-free fast paths on `Atomic` fields) showed that `perturb()` points must be written inside the library under test, at every racy window, to reach narrow interleavings. Without them, the breaker's test relies on 20 000 rounds under the OS scheduler. The roadmap made this wait for P4; real use is the stronger signal.
 - **Options considered:**
   1. `patchFile` in a `.nims` to replace `std/atomics` and `std/locks` in the test build. Transparent, but it also replaces them for the standard library and for nimlinear itself (the Recorder's counter and the scheduler would switch inside themselves), and it depends on the internal layout of those modules across Nim versions.
@@ -244,3 +244,15 @@ Status: **Proposed** (not implemented) or **Accepted**.
 - **Choice:** no new hook. Results from an open set are modeled by making the set finite in the state, which keeps pending operations sound: the state holds the candidate values (for example, a small pool of ids configured by the test), and `outcomes` lists one branch per candidate that is still free. The pattern is documented in [Models](MODELS.md#results-from-an-open-set) with an example.
 - **Reason:** the checker stays sound for pending operations, the verdict stays deterministic (D-20) and the API stays as it is (no **breaking** change). Every case seen so far fits a finite pool; one that cannot would need a new entry here.
 - **Consequence:** the test must restrict the generator to the pool (as the shipped generators already do with keys). The cost grows with the pool size, since each free candidate is a branch; keep pools small (3 to 8 values).
+
+## D-29: scheduler built into the round harness, with calibrated `steps`
+
+- **Status:** Accepted (implemented)
+- **Context:** PCT draws its `depth - 1` priority change points among `steps` switch points. The user had to guess `steps`. On the circuit breaker (P6 validation) the guess was 200 while a round had a median of 11 switch points (6 to 21): almost every change point fell after the round ended, and an injected bug was found 4 times in 2 000 rounds instead of 150 (depth 3) with `steps = 12`. The same scheduler wiring (a global `Scheduler`, `initScheduler` in `setup`, `deinitScheduler` in `teardown`, `enter`/`leave` hooks) was repeated in five places.
+- **Choice:**
+  1. `Scheduler.stepsTaken` reports the switch points of a round.
+  2. `RoundsConfig(schedule: true, depth, steps)` makes `runRounds`, `runRound` and `runScenario` install the scheduler themselves (seeded with the round's `RoundInfo.seed`), after `setup` and removed before `teardown`. User `ThreadHooks` are refused with `schedule` (one scheduler at a time).
+  3. `steps = 0` (the default) **calibrates**: round 1's operations run once with change points out of reach, and the switch points counted become `steps` for every round. The value is returned in `RoundsResult.steps`; `runScenario` with the same `steps` replays a round exactly.
+  4. The manual wiring stays supported.
+- **Reason:** removes a parameter users cannot know and that silently weakens PCT, and the boilerplate around it. Calibrating once, on round 1, keeps `(seed, round)` (plus the config) the identity of a round (D-20, R15): no round depends on earlier ones.
+- **Consequence:** one extra round of cost per `runRounds` call. Rounds whose switch-point count varies a lot are calibrated on one sample (round 1); a fixed `steps` remains available. Replay shrink (D-27) was measured again with calibrated steps: no change (about 18 to 20 of 36 operations kept, as with a fixed `steps`), because removing operations moves the switch points whatever `steps` is; replay is left as it is.
