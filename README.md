@@ -110,6 +110,20 @@ Then `runRounds(RoundsConfig(...), initState, MyModel, setup, genOp, exec, teard
 
 To write the sequential specification of your object, see [Sequential models](docs/MODELS.md). Shipped models: `Register`, `EventFlag`, `BoundedQueue`, `CircuitBreaker`, `Map`, `Stack`, `Semaphore` (in `nimlinear/models/*`); all but `CircuitBreaker` come with a default operation generator, so a simple test needs no `genOp` ([Models](docs/MODELS.md#default-operation-generators)).
 
+## More interleavings without editing the code under test
+
+The default run observes whatever order the OS picks, so narrow races can stay hidden for thousands of rounds. Two optional tools widen what the rounds explore, and the checker is unchanged by either:
+
+- **`nimlinear/intercept`** makes every atomic write and every lock acquire a switch point, with no `perturb()` in the object. The code under test changes one import, behind its own define:
+  ```nim
+  when defined(nimlinearIntercept): import nimlinear/intercept
+  else: import std/[atomics, locks]
+  ```
+  Compile the test with `-d:nimlinearIntercept -d:nimlinearPerturb`, then `RoundsConfig(schedule: true)`. Production builds never import nimlinear. On a real lock-free circuit breaker with an injected bug, 150 of 2 000 rounds failed (depth 3, calibrated steps), against 0 to 1 failures with the OS scheduler ([Measurements](docs/MEASUREMENTS.md#intercepted-atomics-and-locks-p6)).
+- **`RoundsConfig(schedule: true)`** runs each round under a seeded PCT scheduler and calibrates its step count. The same seed gives the same interleaving.
+
+Limits: plain (non-atomic) fields are not intercepted, `Cond` is not supported with an intercepted `Lock`, and PCT gives a probability, not a guarantee ([API](docs/API.md#nimlinearintercept-p6), [Comparison](docs/COMPARISON.md#probabilistic-coverage-of-pct)).
+
 ## Examples
 
 All in [`examples/`](examples/). They are compiled and run in CI.
@@ -173,7 +187,7 @@ Read it this way: operations `1`, `4` and `7` form the longest prefix that the m
 ## Limits
 
 - The checker is exponential in the worst case (the problem is NP-complete). Long histories with bounded overlap are fast: 40 000 operations in about 20 ms ([benchmarks](docs/MEASUREMENTS.md#benchmarks)).
-- It observes **one real execution per round**. It does not explore every interleaving: a bug that only shows up in another order can be missed. More rounds, `perturb()` points and the PCT scheduler increase the coverage, without a guarantee ([Decisions](docs/DECISIONS.md), D-07 and D-18).
+- It observes **one real execution per round**. It does not explore every interleaving: a bug that only shows up in another order can be missed. More rounds, `perturb()` points and the PCT scheduler increase the coverage, without a guarantee ([Decisions](docs/DECISIONS.md), D-07 and D-18; what PCT guarantees and what it does not: [Comparison](docs/COMPARISON.md#probabilistic-coverage-of-pct)).
 - It checks **linearizability** (sequential consistency of one object). Relaxed memory orderings (acquire/release) are not modeled: store-buffering outcomes on real hardware are invisible to it.
 - **Linearizability is safety, not liveness.** An operation that never returns shows up as pending, not as a violation. Catch hangs with a timeout in the result or a watchdog ([Models](docs/MODELS.md#eventflag-and-lost-wakeup)).
 - `shrink` uses a heuristic guard against artificial failures (D-24). `checkPartitioned` trusts the model's `partition`; validate a new one with `-d:nimlinearVerifyPartition`.

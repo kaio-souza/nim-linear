@@ -68,7 +68,7 @@ How to read it:
 - **B**: nimlinear is much faster here. Probable reason: its memo key includes the full model state with a hash, while the Go model in `tests/measure/porcupine/main.go` (written for this comparison) only provides `Equal`, so Porcupine compares states one by one. A Porcupine expert might write a faster model; treat this row with care.
 - **C**: nimlinear grows linearly (2x per doubling) after M22; before M22 it took 1.26 s for 20 000 operations. Porcupine grows faster than linearly on this shape.
 - **E**: both grow faster than linearly with many pending operations (nimlinear about 3x per doubling). Known limit, see D-25.
-- Not compared: memory, `outcomes` models, ticks.
+- Not compared in this table: `outcomes` models, ticks. Memory: see [the 2026-11-25 memory comparison](#memory-against-porcupine).
 
 ### 2026-11-22, before M22 (for reference)
 
@@ -77,6 +77,70 @@ How to read it:
 | A | n = 16 / 18 | 0.89 s / 5.5 s |
 | B | n = 9 / 10 | 1.45 s / 15.7 s |
 | C | 10 000 / 20 000 ops | 305 ms / 1.26 s (quadratic) |
+
+### 2026-11-25, 15 runs each (median and IQR)
+
+Same machine and toolchains as above: Nim 2.2.4 `--mm:orc -d:release`, Go 1.23.4, Porcupine v0.1.6, Linux amd64, Intel Core i5-10210U. Each run is one pass of `bench` (nimlinear) or of the Porcupine harness over the same exported files, run in sequence, not in parallel. A Porcupine pass includes the 60 s timeout of `queue_B9`, so one pass takes about 90 s.
+
+Conditions, so the numbers can be repeated:
+
+- **Builds:** `nim c -d:release --mm:orc` for `bench` (threads off, the default); `go build` of `tests/measure/porcupine` with Go 1.23.4 (module `github.com/anishathalye/porcupine` v0.1.6).
+- **Histories:** one `bench --export:DIR` run wrote the JSON Lines files; every pass read those same files. Porcupine's timing covers `CheckOperationsTimeout` only, as nimlinear's covers `checkLinearizable` only; parsing is outside both.
+- **Runs:** 15 passes of nimlinear, then 15 of Porcupine, sequentially in one background script (not part of the repository). Nothing else of this project ran during them.
+- **Machine:** 8 logical CPUs, load average about 1 at the start; no CPU pinning, no governor change, no other benchmark in parallel. The machine is a laptop-class CPU and was not isolated, so timings carry its normal variance.
+- **Reading the table:** median and IQR over the 15 runs; `timeout` means the 60 s limit was hit in every run.
+
+| Shape | Size | nimlinear, median [IQR] | Porcupine, median [IQR] |
+|---|---|---|---|
+| A | n = 8 | 0.7 ms [0.7–0.8] | 0.6 ms [0.5–0.6] |
+| A | n = 12 | 26.6 ms [25.5–27.7] | 24.8 ms [23.1–25.6] |
+| A | n = 14 | 162 ms [161–180] | 129 ms [124–140] |
+| A | n = 16 | 1.06 s [1.02–1.09] | 0.85 s [0.83–0.92] |
+| B | n = 6 | 1.5 ms [1.4–1.9] | 3.1 ms [2.9–3.3] |
+| B | n = 8 | 113 ms [111–148] | 19.3 s [18.0–21.9] |
+| B | n = 9 | 1.29 s [1.28–1.30] | timeout (60 s) in 15 of 15 runs |
+| C | 10 000 ops | 5.6 ms [5.5–6.1] | 17.4 ms [16.5–18.6] |
+| C | 20 000 ops | 10.3 ms [10.1–10.8] | 54.0 ms [52.4–59.1] |
+| C | 40 000 ops | 20.2 ms [19.6–21.8] | 208 ms [200–210] |
+| D | not partitioned | 0.3 ms [0.3–0.4] | 0.5 ms [0.5–0.5] |
+| D | partitioned | < 0.1 ms | < 0.1 ms |
+| E | 1 000 ops | 0.6 ms [0.6–0.6] | 1.0 ms [0.8–1.0] |
+| E | 2 000 ops | 1.5 ms [1.4–1.6] | 2.2 ms [2.1–2.4] |
+| E | 4 000 ops | 4.4 ms [4.1–4.6] | 5.8 ms [5.1–6.0] |
+
+What the repeated runs change in the reading above:
+
+- **A: Porcupine is faster** for n = 12 to 16, and the IQRs do not overlap from n = 14.
+- **B: nimlinear is faster** by a wide margin at every size, with the caveat about the Go model from the 2026-11-22 table still applying.
+- **C and E: nimlinear is faster**, and its growth is linear on C (2x per doubling) and about 2.5x on E.
+- **D:** both are below a millisecond; the partitioned check is faster than the whole-history check on both tools.
+
+The IQRs are narrow for most rows (within about 10 % of the median). The wide ones are nimlinear's B n = 8 (111–148 ms) and the sub-millisecond rows, where the timer resolution of `bench` (0.1 ms) dominates.
+
+## Memory against Porcupine
+
+Same shapes, same exported files, same method on both sides: a fresh process loads the history and checks it, and the process reports its peak resident set size (`VmHWM` from `/proc/self/status`, Linux only). `tests/measure/memory.nim` does it for nimlinear; `go run . -mem register|queue FILE load|check` in `tests/measure/porcupine` does it for Porcupine. Each point is the median of 5 processes.
+
+Build and run: `nim c -d:release --mm:orc -o:DIR/mem tests/measure/memory.nim`, then `DIR/mem register|queue FILE load|check`; and `go build` in `tests/measure/porcupine`, then `DIR/porc -mem register|queue FILE load|check`. Same files and same 5-run median as the timing table, on the same machine and in the same session. Only `VmHWM` is read; the Go GC and the Nim allocator are left at their defaults.
+
+Reported: the peak RSS of the **check** process, which is what a test process needs. The load-only baseline is shown in the run notes below; it differs between the two tools (the parser of nimlinear keeps the whole file text, and the Go loader builds its own operation slice), so subtracting it would mix parser memory into the checker's figure.
+
+| History | nimlinear, check (peak RSS) | Porcupine, check (peak RSS) | Verdict |
+|---|---|---|---|
+| register A, n = 12 | 7.1 MB | 6.5 MB | not linearizable |
+| register A, n = 14 | 22.3 MB | 14.5 MB | not linearizable |
+| register A, n = 16 | 82.4 MB | 55.8 MB | not linearizable |
+| queue B, n = 8 | 39.0 MB | 25.9 MB | not linearizable |
+| register C, 40 000 ops | 44.4 MB | 231.5 MB | linearizable |
+| register E, 4 000 ops | 5.8 MB | 8.7 MB | linearizable |
+
+How to read it:
+
+- **Exponential shapes (A, B):** nimlinear peaks at about 1.1 to 1.5 times Porcupine's memory. The reason for the larger peak on nimlinear's side has not been measured.
+- **Long history with bounded overlap (C, E):** nimlinear is about 5 times lower on C (40 000 operations) and 1.5 times lower on E.
+- **Load baseline (not the checker):** before the check, the process of nimlinear is at 2 MB for the small files and 33.7 MB for C's 40 000 operations; Porcupine's is 2.6 MB and 19.5 MB. The extra 14 MB on nimlinear's side is the JSON Lines parser, not the checker.
+
+Caveats: RSS is what the OS reports, so allocator and GC behaviour count (Go's GC and nimlinear's `--mm:orc` free memory at different times); one machine; one shape per row; `queue_B9` was not measured, since Porcupine times out on it. `kv_D` (the map model) was not measured, because the memory harness does not include it.
 
 ## Round harness cost
 

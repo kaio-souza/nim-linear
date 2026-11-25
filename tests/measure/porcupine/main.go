@@ -179,6 +179,10 @@ func run(name string, m porcupine.Model, ops []porcupine.Operation) {
 }
 
 func main() {
+	if os.Args[1] == "-mem" {
+		memory(os.Args[2], os.Args[3], os.Args[4])
+		return
+	}
 	dir := os.Args[1]
 	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
 	sort.Strings(files)
@@ -195,4 +199,47 @@ func main() {
 			run(base+" (partitioned)", kvModel(true), ops)
 		}
 	}
+}
+
+// memory checks one history file in this process, for the comparison with
+// nimlinear's tests/measure/memory.nim (docs/MEASUREMENTS.md#memory). It
+// prints the peak resident set (VmHWM) after loading only ("load") or after
+// loading and checking ("check"); the check's memory is the difference.
+//
+//	go run . -mem register FILE load|check
+func memory(model, file, mode string) {
+	var m porcupine.Model
+	var ops []porcupine.Operation
+	switch model {
+	case "register":
+		m = registerModel
+		ops = load(file, dec[regIn], dec[regOut])
+	case "queue":
+		m = queueModel
+		ops = load(file, dec[queueIn], dec[queueOut])
+	default:
+		panic("unknown model: " + model)
+	}
+	verdict := "-"
+	if mode == "check" {
+		res := porcupine.CheckOperationsTimeout(m, ops, 60*time.Second)
+		verdict = map[porcupine.CheckResult]string{porcupine.Ok: "Linearizable", porcupine.Illegal: "NotLinearizable", porcupine.Unknown: "Timeout"}[res]
+	}
+	fmt.Printf("rss_kb=%d verdict=%s\n", peakRSSKb(), verdict)
+}
+
+// peakRSSKb reads VmHWM (peak resident set size, kB) from /proc/self/status.
+func peakRSSKb() int {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		panic(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "VmHWM:") {
+			var kb int
+			fmt.Sscanf(strings.TrimPrefix(line, "VmHWM:"), "%d", &kb)
+			return kb
+		}
+	}
+	panic("VmHWM not found")
 }

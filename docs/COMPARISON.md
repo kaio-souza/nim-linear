@@ -23,9 +23,24 @@ Review of 2026-11-22, after M0–M13; status updated after M14–M24 the same da
 | Visualization | ASCII timeline + HTML (M18) | HTML | SVG | trace text |
 | Recorder for real threads | yes (M7) | user code | Jepsen | built in |
 | Operation and scenario generation | round harness with user generator (M17) | no | Jepsen generators | yes |
-| Controlled scheduling | PCT at manual points + `SchedLock` (M13, M19) | no | no | model checking, intercepts locks |
+| Controlled scheduling | PCT at manual points, `SchedLock` (M13, M19), atomics and locks intercepted without edits (P6, `nimlinear/intercept`) | no | no | model checking, intercepts locks |
 | Linear-time on long histories | yes (M22), except many pending ops | measured superlinear (shape C) | not measured | n/a |
 | Saved format with a version | yes (M15) | n/a | EDN | n/a |
+
+## Probabilistic coverage of PCT
+
+The controlled scheduler (`nimlinear/schedule`, with `RoundsConfig(schedule: true)`) uses PCT (Burckhardt, Kothari, Musuvathi and Nagarakatte, ASPLOS 2010). The result for PCT, as stated in that paper, is a lower bound on the probability of finding a given bug in one random schedule: for a program with `n` threads and `k` switch points, a bug that needs `d` ordering constraints is found with probability at least `1 / (n · k^(d-1))`. This is a bound per round, for a bug of a given depth, and it is all that PCT promises.
+
+What it does **not** mean for nimlinear:
+
+- **Only the switch points are scheduled.** PCT chooses among the points where a thread can yield: `perturb()` calls and, with `-d:nimlinearIntercept`, atomic writes and lock acquires. A bug that needs a switch on a plain field, or inside a region with no point, is outside the model. Its probability is zero, whatever the number of rounds.
+- **`k` is an estimate.** `steps = 0` (D-29) counts the switch points of round 1 and uses that number for every round. Rounds with a different count change the bound: a larger `k` makes a change point fall after the end of a round, a smaller one wastes it.
+- **The bound is pessimistic for real bugs.** On the circuit breaker (3 threads, 4 operations, depth 3, `steps` about 12), the bound gives at least 1 in 432 rounds, about 4.6 failures in 2 000 rounds. The injected bug failed in 150 of 2 000 rounds ([Measurements](MEASUREMENTS.md#intercepted-atomics-and-locks-p6)). Use the bound as a floor for planning, not as a forecast.
+- **No absence claim.** A bug that a test does not find in `N` rounds is not thereby excluded. The bound says what a bug of a known depth costs to find; nimlinear does not know the depth of an unknown bug, and does not explore all schedules (D-02, D-07).
+- **Replay is exact only for controlled operations.** The same seed gives the same schedule at the switch points. Blocking calls, I/O and time-dependent code outside those points stay on the OS scheduler, so a failing round may not reproduce byte for byte.
+- **Sequential consistency only.** Relaxed memory orderings are not explored, even by the scheduler (README, Limits).
+
+Measured numbers and how they were taken: [Measurements](MEASUREMENTS.md#intercepted-atomics-and-locks-p6); the design of the scheduler: D-18 and D-29 in [Decisions](DECISIONS.md).
 
 ## Gaps
 
@@ -44,11 +59,11 @@ Each gap has a milestone in the [Roadmap](../CONTRIBUTING.md#roadmap). All eleve
 6. **Wall-clock timeout (M20).** Only the state budget exists. It is deterministic but hard to size. Direction: an optional `timeout` next to `budget`, returning `vkInconclusive`; document that a timeout makes the verdict depend on the machine.
    **Status:** done.
 7. **Scheduler and locks (M19).** Under `nimlinear/schedule`, a `perturb()` inside a critical section can hang the round, so bugs inside critical sections are out of reach. Direction: a `SchedLock` that yields to the scheduler while waiting. Also document that switches happen only at points the user placed.
-   **Status:** done (`SchedLock`, deadlock flag). Remains: switch points are still placed by hand; plain `Lock` and atomics are not intercepted.
+   **Status:** done (`SchedLock`, deadlock flag). Atomics and locks are now intercepted without edits in the code under test (P6, `nimlinear/intercept`, D-26). Remains: plain (non-atomic) fields and `Cond` are not intercepted; their switch points are still placed by hand (see [Probabilistic coverage](#probabilistic-coverage-of-pct)).
 8. **Scalability on long histories (M22).** See [Measurements](MEASUREMENTS.md#benchmarks): quadratic where it should be linear. Direction: incremental `minRet`, a list of candidate operations instead of a scan from 0, a cheaper configuration key, an `invoke`→`return` table.
    **Status:** done (D-25): 40 000 operations in about 20 ms. Remains: many pending operations in a long history still grow the cost (shape E).
 9. **Benchmarks (M23).** One easy shape, no comparison with Porcupine on the same histories, nothing in CI. Direction: shapes A–C plus partitioned and pending cases, exported as JSON Lines so Porcupine can run them, and a CI job that fails on a large regression.
-   **Status:** done: shapes A–E, Porcupine side by side in [Measurements](MEASUREMENTS.md#benchmarks), `--check` job in CI. Remains: memory comparison, several runs with variance.
+   **Status:** done: shapes A–E, Porcupine side by side in [Measurements](MEASUREMENTS.md#benchmarks), `--check` job in CI. 15 repeated runs per tool with median and IQR, and peak memory compared on the same files ([2026-11-25](MEASUREMENTS.md#2026-11-25-15-runs-each-median-and-iqr)). Remains: timings on macOS and Windows; memory on shapes with more operations per state.
 10. **Generic partition key (M21).** `partition` returns `int`; string keys must be hashed by the user. A collision is not wrong, only slower. Direction: any key type with `hash`, `==` and `<` (for D-20 order).
    **Status:** done.
 11. **Smaller items (M24).** `History.events` is public, so a history can skip `newHistory` validation; async use (chronos, asyncdispatch) works with a logical thread index per task but is not documented; the macOS CI job installs Nim from `brew` without a pinned version.
