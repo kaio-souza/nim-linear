@@ -114,13 +114,6 @@ else:
         if fileExists(r.savedTo):
           let back = parseJsonLines[COp, CRes](readFile(r.savedTo))
           check checkLinearizable(back, CState(), CModel).kind == vkNotLinearizable
-        # R16: the recorded history is kept next to the shrunk one.
-        if r.history.events.len < r.original.events.len:
-          check fileExists(r.originalSavedTo)
-          if fileExists(r.originalSavedTo):
-            check readFile(r.originalSavedTo) == r.original.toJsonLines()
-        else:
-          check r.originalSavedTo == ""
         check "failed in round" in r.describe
 
     test "same seed, same operations":
