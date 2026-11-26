@@ -26,8 +26,6 @@ type
     stuckCall*: Op
     stuckRes*: Res
     alternatives*: seq[Alternative[Res]]  ## candidates tried at the failure point
-    stuckEverFit*: bool  ## the stuck operation's observed result matched the model
-                         ## in some explored configuration (false: no order explains it)
 
   Verdict*[Op, Res] = object
     case kind*: VerdictKind
@@ -48,26 +46,15 @@ type
     call: Op
     res: Res
 
-  Window = object
-    ## P9.1: the key's window. Word 0 is inline, so no heap allocation while
-    ## the overlap stays under 65 operations; words 1.. are in `extra`
-    ## (nil when `nw <= 1`), shared between copies and never mutated in
-    ## place (copy on write in `childKey`). With `f` packed next to `nw`, a
-    ## key is 24 bytes, the same as the former `(int, seq)` but with no
-    ## allocation. Canonical: `nw` words, the last one nonzero.
-    f: int32               # set only in a Config's key (memo), else unused
-    nw: int32
-    w0: uint64
-    extra: ref seq[uint64]
-
   Config[S] = object
-    window: Window         # P9.1: `f` lives in `window.f`, packed with `nw`
-    state: S               # (the HashSet already stores each key's hash)
+    f: int
+    window: seq[uint64]
+    state: S
 
   Frame[S, Res] = object
     state: S
     f: int                 # every index < f is linearized
-    window: Window         # bit j: index f + 1 + j linearized
+    window: seq[uint64]    # bit j: index f + 1 + j linearized; no trailing zero words
     minRet: int            # lowest retSeq among completed, unlinearized ops
     minRetPos: int         # position of that op in `byRet`
     cand: int              # next candidate index to try
@@ -75,85 +62,42 @@ type
     nexts: seq[S]          # next states still to try for `cur`
     alts: seq[Alternative[Res]]
 
-template word(w: Window, k: int): uint64 =
-  (if k == 0: w.w0 else: w.extra[][k - 1])
-
-
-proc `==`*(a, b: Window): bool {.inline.} =
-  ## Internal, exported for the same reason as `hash`. Compares `extra` by
-  ## value (the default `==` would compare the refs).
-  if a.f != b.f or a.nw != b.nw or a.w0 != b.w0: return false
-  for k in 1 ..< a.nw:
-    if a.extra[][k - 1] != b.extra[][k - 1]: return false
-  true
-
-proc toWords(w: Window): seq[uint64] =
-  for k in 0 ..< w.nw: result.add w.word(k)
-
-proc keyHash[S](f: int, w: Window, state: S): Hash {.inline.} =
+proc hash[S](c: Config[S]): Hash =
   mixin hash
-  var h: Hash = hash(f)
-  for k in 0 ..< w.nw: h = h !& hash(w.word(k))
-  h = h !& hash(state)
+  var h: Hash = hash(c.f)
+  for w in c.window: h = h !& hash(w)
+  h = h !& hash(c.state)
   !$h
 
-proc hash*(w: Window): Hash {.inline.} =
-  ## Internal (exported only so that the HashSet of `checkCore` finds it at
-  ## the instantiation site; `Window` itself is private).
-  var h: Hash = hash(w.f)
-  for k in 0 ..< w.nw: h = h !& hash(w.word(k))
-  !$h
-
-proc hash*[S](c: Config[S]): Hash {.inline.} = keyHash(int(c.window.f), c.window, c.state)
-
-proc `==`*[S](a, b: Config[S]): bool =
+proc `==`[S](a, b: Config[S]): bool =
   mixin `==`
-  a.window == b.window and a.state == b.state
+  a.f == b.f and a.window == b.window and a.state == b.state
 
 template isSet(bits: seq[uint64], i: int): bool = (bits[i shr 6] and (1'u64 shl (i and 63))) != 0
 template setBit(bits: var seq[uint64], i: int) = bits[i shr 6] = bits[i shr 6] or (1'u64 shl (i and 63))
 template clearBit(bits: var seq[uint64], i: int) = bits[i shr 6] = bits[i shr 6] and not (1'u64 shl (i and 63))
 
-proc childKey(f: var int, window: var Window, i: int) =
+proc childKey(f: var int, window: var seq[uint64], i: int) =
   ## Adds index `i` (not yet linearized, `i >= f`) to the key `(f, window)`.
   if i > f:
     let b = i - f - 1
-    let k = b shr 6
-    let bit = 1'u64 shl (b and 63)
-    if k == 0:
-      window.w0 = window.w0 or bit
-      if window.nw == 0: window.nw = 1
-      return
-    var e: ref seq[uint64]          # copy on write: `extra` may be shared
-    new(e)
-    if window.extra != nil: e[] = window.extra[]
-    if e[].len < k: e[].setLen k
-    e[][k - 1] = e[][k - 1] or bit
-    window.extra = e
-    window.nw = int32(max(int(window.nw), k + 1))
+    while window.len <= b shr 6: window.add 0'u64
+    window[b shr 6] = window[b shr 6] or (1'u64 shl (b and 63))
     return
   # i == f: the new first unlinearized index skips the run of ones at bit 0.
   var t = 0
-  while t shr 6 < window.nw and (window.word(t shr 6) and (1'u64 shl (t and 63))) != 0: inc t
+  while t shr 6 < window.len and (window[t shr 6] and (1'u64 shl (t and 63))) != 0: inc t
   f += t + 1
   let sh = t + 1                   # drop the run and the zero bit after it
   let words = sh shr 6
   let bitsSh = sh and 63
-  var n = max(0, int(window.nw) - words)
-  var ws: seq[uint64]
-  if n > 1: ws.setLen n - 1
-  var w0 = 0'u64
-  for k in 0 ..< n:
-    var w = window.word(k + words) shr bitsSh
-    if bitsSh != 0 and k + words + 1 < window.nw:
-      w = w or (window.word(k + words + 1) shl (64 - bitsSh))
-    if k == 0: w0 = w else: ws[k - 1] = w
-  while n > 0 and (if n == 1: w0 else: ws[n - 2]) == 0: dec n
-  var res = Window(nw: int32(n), w0: w0)
-  if n > 1:
-    ws.setLen n - 1
-    new(res.extra)
-    res.extra[] = move ws
+  var res = newSeq[uint64](max(0, window.len - words))
+  for k in 0 ..< res.len:
+    var w = window[k + words] shr bitsSh
+    if bitsSh != 0 and k + words + 1 < window.len:
+      w = w or (window[k + words + 1] shl (64 - bitsSh))
+    res[k] = w
+  while res.len > 0 and res[^1] == 0: res.setLen res.len - 1
   window = res
 
 template hasOutcomes*(model: typedesc, S, Op: typedesc): bool {.dirty.} =
@@ -177,15 +121,15 @@ else:
     mixin outcomes
     outcomes(model, s, op)
 
-proc buildOps[Op, Res](h: History[Op, Res]):
-    (seq[OpInfo[Op, Res]], Table[OpId, int], seq[int]) {.raises: [].} =
-  ## Preprocessing (P8: split from the search). Operations indexed in
-  ## increasing invoke/tick `seq`; `indexOf` maps an `OpId` to its index;
-  ## `byRet` lists the completed operations and ticks in increasing return
-  ## time, for an incremental minRet. Internal times are 2*seq; a tick
-  ## occupies [2*seq, 2*seq + 1], so it is a candidate exactly when nothing
-  ## that returned earlier is still unlinearized. `History` guarantees every
-  ## return has an earlier invoke (`newHistory`), so none is skipped.
+proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
+                           budget: int, deadline: MonoTime, useDeadline: bool,
+                           explored: var int, timedOut: var bool): Verdict[Op, Res] {.raises: [].} =
+  mixin step, outcomes, `==`, hash
+  timedOut = false
+  let budget = max(budget, 1)    # the initial configuration always counts
+
+  # Internal times are 2*seq; a tick occupies [2*seq, 2*seq + 1], so it is a
+  # candidate exactly when nothing that returned earlier is still unlinearized.
   var ops: seq[OpInfo[Op, Res]]
   var indexOf = initTable[OpId, int]()
   for e in h.events:
@@ -202,40 +146,15 @@ proc buildOps[Op, Res](h: History[Op, Res]):
       let i = indexOf.getOrDefault(e.op, -1)
       if i >= 0:
         ops[i].retSeq = 2 * int(e.seqNo); ops[i].pending = false; ops[i].res = e.res
-  var byRet: seq[int]
-  for i in 0 ..< ops.len:
-    if not ops[i].pending: byRet.add i
-  byRet.sort(proc (a, b: int): int = cmp(ops[a].retSeq, ops[b].retSeq))
-  (ops, indexOf, byRet)
-
-proc recordFailure[Op, Res](best: var Witness[Op, Res], path: seq[int],
-                            ops: seq[OpInfo[Op, Res]], indexOf: Table[OpId, int],
-                            alts: seq[Alternative[Res]]) {.raises: [].} =
-  ## P8: the deepest failure so far becomes the witness: the linearized
-  ## prefix, the candidates tried there, and the first of them as `stuck`.
-  ## (`stuckEverFit` is set once the search ends.)
-  best.prefix.setLen 0
-  for j in path: best.prefix.add ops[j].id
-  best.alternatives = alts
-  # Reset first: a stale stuck from a shallower failure must not leak.
-  best.stuck = OpId(0); best.stuckCall = default(Op); best.stuckRes = default(Res)
-  if alts.len > 0:
-    let s = indexOf.getOrDefault(alts[0].candidate, -1)
-    if s >= 0:
-      best.stuck = ops[s].id; best.stuckCall = ops[s].call; best.stuckRes = ops[s].res
-
-proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
-                           budget: int, deadline: MonoTime, useDeadline: bool,
-                           explored: var int, timedOut: var bool): Verdict[Op, Res] {.raises: [].} =
-  mixin step, outcomes, `==`, hash
-  timedOut = false
-  let budget = max(budget, 1)    # the initial configuration always counts
-
-  let (ops, indexOf, byRet) = buildOps(h)
   let n = ops.len
 
+  # Completed ops (and ticks) in increasing retSeq, for an incremental minRet.
+  var byRet: seq[int]
+  for i in 0 ..< n:
+    if not ops[i].pending: byRet.add i
+  byRet.sort(proc (a, b: int): int = cmp(ops[a].retSeq, ops[b].retSeq))
+
   var bits = newSeq[uint64]((n + 63) div 64)
-  var fit = newSeq[bool](n)     # observed result matched the model somewhere
   var completedLeft = byRet.len
 
   proc nextMin(bits: seq[uint64], fromPos: int): (int, int) =
@@ -244,12 +163,12 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
     if p < byRet.len: (ops[byRet[p]].retSeq, p) else: (high(int), p)
 
   var visited = initHashSet[Config[S]]()
-  visited.incl Config[S](state: init)
+  visited.incl Config[S](f: 0, state: init)
   explored = 1
   var path: seq[int]
   var stack: seq[Frame[S, Res]]
   var depth = 0                 # frames in use; stack keeps capacity (reused)
-  template pushFrame(st: S, ff: int, ex: Window, mr, mrp: int) =
+  template pushFrame(st: S, ff: int, ex: seq[uint64], mr, mrp: int) =
     if depth == stack.len: stack.add Frame[S, Res]()
     stack[depth].state = st
     stack[depth].f = ff
@@ -263,7 +182,7 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
     inc depth
   block:
     let (mr, mrp) = nextMin(bits, 0)
-    pushFrame(init, 0, Window(), mr, mrp)
+    pushFrame(init, 0, @[], mr, mrp)
   var bestLen = -1
   var best: Witness[Op, Res]
 
@@ -297,7 +216,15 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
         # No candidates left: this configuration fails.
         if path.len > bestLen:
           bestLen = path.len
-          recordFailure(best, path, ops, indexOf, stack[top].alts)
+          best.prefix.setLen 0
+          for j in path: best.prefix.add ops[j].id
+          best.alternatives = stack[top].alts
+          # Reset first: a stale stuck from a shallower failure must not leak.
+          best.stuck = OpId(0); best.stuckCall = default(Op); best.stuckRes = default(Res)
+          if best.alternatives.len > 0:
+            let s = indexOf.getOrDefault(best.alternatives[0].candidate, -1)
+            if s >= 0:
+              best.stuck = ops[s].id; best.stuckCall = ops[s].call; best.stuckRes = ops[s].res
         dec depth
         if path.len > 0:
           let j = path.pop
@@ -311,7 +238,6 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
         let outs = pureOutcomes(model, stack[top].state, ops[i].call)
         for e in outs:
           if not check or e.res == ops[i].res: stack[top].nexts.add e.next
-        if stack[top].nexts.len > 0: fit[i] = true
         if stack[top].nexts.len == 0:
           # A pending op with no outcome simply was not applied: not a
           # failure, so never an alternative (and never stuck).
@@ -332,7 +258,6 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
           stack[top].alts.add Alternative[Res](candidate: ops[i].id, expected: e.res,
                                                observed: ops[i].res, why: e.why)
           continue
-        fit[i] = true
         stack[top].nexts.add e.next
       # Outcomes are tried in the model's order (D-20); pop from the back.
       stack[top].nexts.reverse()
@@ -345,12 +270,8 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
     var window = stack[top].window
     childKey(f, window, i)
 
-    # P9.1: one lookup; the budget and timeout checks below run only for a
-    # new configuration, as before (a config added just before returning
-    # inconclusive changes nothing).
-    var key = window
-    key.f = int32(f)
-    if visited.containsOrIncl(Config[S](window: key, state: next)):
+    let cfg = Config[S](f: f, window: window, state: next)
+    if cfg in visited:
       continue
     if explored >= budget:
       report()
@@ -360,6 +281,7 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
       timedOut = true
       return Verdict[Op, Res](kind: vkInconclusive, statesExplored: explored, budget: budget,
                               timedOut: true)
+    visited.incl cfg
     inc explored
     when defined(nimlinearMeasure):
       sampleMem()
@@ -372,26 +294,8 @@ proc checkCore[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
       if ops[i].retSeq == mr:
         (mr, mrp) = nextMin(bits, mrp)
     pushFrame(next, f, window, mr, mrp)
-    when defined(nimlinearDebug):
-      # P8: the compact key and the incremental minRet agree with the bitset.
-      var ef = 0
-      while ef < n and bits.isSet(ef): inc ef
-      doAssert ef == f, "nimlinearDebug: f " & $f & " but first unlinearized index is " & $ef
-      var ew: seq[uint64]
-      for j in ef + 1 ..< n:
-        if bits.isSet(j):
-          let b = j - ef - 1
-          while ew.len <= b shr 6: ew.add 0'u64
-          ew[b shr 6] = ew[b shr 6] or (1'u64 shl (b and 63))
-      doAssert ew == window.toWords, "nimlinearDebug: window does not match the bitset"
-      var em = high(int)
-      for j in 0 ..< n:
-        if not ops[j].pending and not bits.isSet(j) and ops[j].retSeq < em: em = ops[j].retSeq
-      doAssert em == mr, "nimlinearDebug: minRet " & $mr & " but true minimum is " & $em
 
   report()
-  let si = indexOf.getOrDefault(best.stuck, -1)
-  best.stuckEverFit = si >= 0 and fit[si]
   Verdict[Op, Res](kind: vkNotLinearizable, witness: best)
 
 proc deadlineOf(timeout: Duration): (MonoTime, bool) =
