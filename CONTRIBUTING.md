@@ -186,8 +186,9 @@ A milestone is not a reason to release. A release bundles a set of changes that 
 Policy:
 
 - **Milestones go to `master`.** Each finished milestone adds entries under `## Unreleased` in `CHANGELOG.md`.
-- **Before releasing:** full CI matrix green on `master`, and no change to the public API or to the JSON format in the last **7 days** (stabilization period, so real use can find problems first).
-- **At least 7 days between releases** (not applicable to the first one, which only needs the stabilization period above). Single exception: a fix for a bug that makes the checker return a **wrong verdict** (false `vkLinearizable` or false `vkNotLinearizable`). That fix ships alone, as soon as CI passes.
+- **Before releasing:** full CI matrix green on `master`.
+- **At least 2 days between releases**, so that several changes bundle into one release instead of many on the same day. Single exception: a fix for a bug that makes the checker return a **wrong verdict** (false `vkLinearizable` or false `vkNotLinearizable`). That fix ships alone, as soon as CI passes.
+- **After the package is published on Nimble** (while it has users): the stabilization period returns, with no change to the public API or to the JSON format in the last **7 days** before a release, and at least **7 days between releases**. The reason is that real use can then find problems before the next release. See [D-33](docs/DECISIONS.md#d-33-release-spacing-while-there-are-no-users-amends-d-21).
 - **Numbering:** SemVer `0.x.y` while the API may change. The number is chosen at release time, based on what changed (API or format break: `x`; anything else: `y`). The roadmap does not reserve version numbers for milestones.
 - **Documentation language:** English until v1. Translations come before v1.
 
