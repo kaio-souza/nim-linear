@@ -8,7 +8,7 @@
 ## linearizable; with 50% chance one completed result is then swapped for
 ## another possible value. Each operation has a 10% chance of never returning.
 
-import std/random
+import std/[random, sets, tables]
 import nimlinear
 
 type
@@ -124,3 +124,91 @@ proc generate*[S, Op, Res](rng: var Rand, init: S, model: typedesc,
       for e in evs.mitems:
         if e.kind == ekReturn and e.seqNo == SeqNo(kept[j].ret): e.res = bad
   (newHistory(evs), kept)
+
+# --- P8: checks of the verdict's content, not only its kind -----------------
+
+proc validPrefix*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
+                              order: seq[OpId], complete: bool): string =
+  ## "" if `order` is a valid linearization prefix of `h`: each operation at
+  ## most once, real time respected (every completed operation that returned
+  ## before another was invoked comes first), and some choice of outcomes
+  ## gives every completed, non-tick operation its observed result. With
+  ## `complete`, every completed operation (and tick) must be in it.
+  ## Otherwise the reason.
+  mixin step, outcomes, `==`
+  type Info = object
+    inv, ret: int
+    pending, tick: bool
+    call: Op
+    res: Res
+  var info = initTable[OpId, Info]()
+  for e in h.events:
+    case e.kind
+    of ekInvoke: info[e.op] = Info(inv: int(e.seqNo), ret: high(int), pending: true, call: e.call)
+    of ekTick: info[e.op] = Info(inv: int(e.seqNo), ret: int(e.seqNo), tick: true, call: e.call)
+    of ekReturn:
+      info[e.op].ret = int(e.seqNo); info[e.op].pending = false; info[e.op].res = e.res
+  var placed = initHashSet[OpId]()
+  for id in order:
+    if id notin info: return "unknown op " & $id
+    if id in placed: return "op " & $id & " twice"
+    for other, x in tables.pairs(info):
+      if other != id and other notin placed and not x.pending and x.ret < info[id].inv:
+        return "op " & $id & " placed before op " & $other & ", which returned before it was invoked"
+    placed.incl id
+  if complete:
+    for id, x in tables.pairs(info):
+      if not x.pending and id notin placed: return "completed op " & $id & " missing"
+  # Results: search over the outcome choices along the fixed order.
+  proc fits(i: int, st: S): bool =
+    if i == order.len: return true
+    let x = info[order[i]]
+    when hasOutcomes(model, S, Op):
+      let outs = outcomes(model, st, x.call)
+    else:
+      let outs = @[step(model, st, x.call)]
+    for e in outs:
+      if x.pending or x.tick or e.res == x.res:
+        if fits(i + 1, e.next): return true
+    false
+  if not fits(0, init): return "results do not match the model along the order"
+  ""
+
+proc verdictContentError*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
+                                      v: Verdict[Op, Res]): string =
+  ## "" if the content of `v` is consistent with `h`; otherwise the reason.
+  case v.kind
+  of vkLinearizable:
+    validPrefix(h, init, model, v.order, complete = true)
+  of vkNotLinearizable:
+    let w = v.witness
+    let p = validPrefix(h, init, model, w.prefix, complete = false)
+    if p.len > 0: return "witness prefix: " & p
+    if w.alternatives.len > 0:
+      if w.stuck in w.prefix: return "stuck op " & $w.stuck & " is in the prefix"
+      var found = false
+      for a in w.alternatives:
+        if a.candidate == w.stuck: found = true
+      if not found: return "stuck op " & $w.stuck & " is not among the alternatives"
+    ""
+  of vkInconclusive: ""
+
+proc sameVerdict*[Op, Res](a, b: Verdict[Op, Res]): bool =
+  ## Field-by-field equality (D-20 determinism).
+  mixin `==`
+  if a.kind != b.kind: return false
+  case a.kind
+  of vkLinearizable: a.order == b.order
+  of vkNotLinearizable:
+    let x = a.witness
+    let y = b.witness
+    if x.prefix != y.prefix or x.stuck != y.stuck or x.stuckEverFit != y.stuckEverFit or
+       not (x.stuckCall == y.stuckCall) or not (x.stuckRes == y.stuckRes) or
+       x.alternatives.len != y.alternatives.len: return false
+    for i in 0 ..< x.alternatives.len:
+      let p = x.alternatives[i]
+      let q = y.alternatives[i]
+      if p.candidate != q.candidate or not (p.expected == q.expected) or
+         not (p.observed == q.observed) or p.why != q.why: return false
+    true
+  of vkInconclusive: a.statesExplored == b.statesExplored and a.timedOut == b.timedOut

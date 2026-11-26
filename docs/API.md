@@ -145,6 +145,8 @@ type
     stuckCall*: Op                      # what was requested in that operation
     stuckRes*: Res                      # what came back in that operation
     alternatives*: seq[Alternative[Res]] # each candidate tried at the failure point (like Knossos :final-paths)
+    stuckEverFit*: bool                 # stuckRes matched the model in some explored configuration;
+                                        # false: no order explains it (R16)
 
   Verdict*[Op, Res] = object
     case kind*: VerdictKind
@@ -253,7 +255,7 @@ proc shrink*[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
     timeout = DurationZero): History[Op, Res] {.raises: [].}
 ```
 
-Greedy, deterministic minimization of a `vkNotLinearizable` history: tries to drop whole threads, then single operations, and keeps a removal only if the history still fails **stuck on the same operation with the same expected result**. Returns `h` unchanged if it does not fail. The guard exists because removing an operation can create a failure that was not in the original (drop the only `write(1)` and a `read() -> 1` becomes unexplainable); it rejects most such removals but is a heuristic, not a proof (D-24). Inconclusive checks count as "not failing".
+Greedy, deterministic minimization of a `vkNotLinearizable` history: tries to drop whole threads, then single operations, and keeps a removal only if the history still fails **stuck on the same operation with the same expected result**, and with the same `stuckEverFit` (R16: dropping the only `enqueue(3)` must not turn a `dequeue() -> 3` in the wrong order into one no order explains). Returns `h` unchanged if it does not fail. The guard exists because removing an operation can create a failure that was not in the original (drop the only `write(1)` and a `read() -> 1` becomes unexplainable); it rejects most such removals but is a heuristic, not a proof (D-24). Inconclusive checks count as "not failing".
 
 Cost: up to O(n²) checks for n operations, each with the full `budget`. `timeout` (zero = none) bounds the whole call: when it runs out, `shrink` returns the smallest history found so far (it still fails the same way). Each check gets what is left of the timeout. With a timeout the result depends on the machine; without one it is deterministic.
 
@@ -307,6 +309,9 @@ type RoundsConfig* = object
   schedule*: bool                # every round under the PCT scheduler (D-29); needs -d:nimlinearPerturb
   depth* = 3                     # PCT depth when schedule
   steps*: int                    # PCT steps when schedule; 0 = calibrate on round 1
+  explore*: bool                 # enumerate the schedules of each round (D-32); needs -d:nimlinearPerturb
+  preemptions* = 2               # explore: most preemptions per schedule
+  maxSchedules* = 10_000         # explore: cap per round
   saveDir*: string               # "" = getTempDir()
   name* = "nimlinear"            # file name prefix
 
@@ -319,7 +324,8 @@ proc runRounds*[I, Obj, Op, Res, SP](cfg: RoundsConfig, init: I, model: typedesc
     genOp: proc (rng: var Rand, thread, index: int): Op {.nimcall.},
     exec: proc (obj: ptr Obj, op: Op): Res {.nimcall, gcsafe.},
     teardown: proc (obj: var Obj) {.nimcall.} = nil,
-    hooks = ThreadHooks()): RoundsResult[Op, Res]
+    hooks = ThreadHooks(),
+    quiescent: proc (obj: var Obj): string {.nimcall.} = nil): RoundsResult[Op, Res]
 proc runRound*[...](cfg, round, setup, genOp, exec, teardown = nil, hooks): History[Op, Res]
 proc runScenario*[...](cfg, round, ops: seq[seq[Op]], setup, exec, teardown = nil, hooks): History[Op, Res]
 proc roundSeed*(seed, round: int): int
@@ -332,10 +338,21 @@ proc describe*[Op, Res](r: RoundsResult[Op, Res]): string
 - `setup` may take a second argument, `RoundInfo`: its `seed` is the per-round seed to give a `Scheduler` (`initScheduler(threads, info.seed)`), so each round gets its own PCT priorities.
 - `roundSeed` mixes `(seed, round)` without overflow; different pairs give different seeds except by rare hash collision. `(seed, round)` is the only guaranteed identity of a round.
 - `partitioned = true` checks with `checkPartitioned` (and shrinks with it); it raises `ValueError` if the model has no `partition`. `timeout` is passed to each check and, like in the checker, makes the verdict machine-dependent.
+- `roundTimeout` (watchdog): a round still running after it, typically blocked outside the switch points (I/O, a `std/locks` lock, a join, a sleep), cannot be stopped, so `runRounds` writes `<name>-seed<s>-round<r>.hung.txt` (seed, per-round seed, operations per thread and, under `schedule`/`explore`, the last 50 switch points) to `saveDir`, prints where to stderr and ends the process with exit code 124. The `.inprogress` file (P13) stays too. Zero (default) = no watchdog. It makes the run machine-dependent, like `timeout`. Test: `tests/tprogress.nim`.
+- `quiescent` (P15, optional): called once per round on the object after every thread finished and before `teardown`. A non-empty message (or a `CatchableError` it raises) fails the round even when the history is linearizable; the message is in `RoundsResult.invariant` and in `describe`. Use it for what results do not show: a reference count back to its initial value, no memory left allocated, an internal length that matches the contents. It sees only the end of the round, not a transient violation, and its value is that of the invariant written.
 - An exception (`CatchableError`) raised by `exec` fails the round: the operation stays pending, that thread runs no more operations, `ThreadHooks.leave` and `teardown` still run, and `RoundsResult.error` holds `thread, operation index, call, exception name and message`. `runRound` raises `ExecError` instead. A `Defect` is not caught.
 - It stops at the first round that fails (`exec` raised, or not `vkLinearizable`), shrinks the history (unless inconclusive or `shrink = false`; bounded by `shrinkTimeout`), and saves it as `<saveDir>/<name>-seed<seed>-round<r>.jsonl`; if that file exists, `-2`, `-3`... is appended, so an earlier file is never overwritten. If saving fails, `savedTo` is `""` and `saveError` says why.
 
 **Built-in scheduler (D-29).** With `schedule = true` (compile with `-d:nimlinearPerturb`), every round runs under a PCT `Scheduler` seeded with `RoundInfo.seed`: installed after `setup`, removed before `teardown`, threads registered for you (passing `ThreadHooks` too raises `ValueError`). `steps = 0` calibrates: round 1's operations run once and the switch points counted (`Scheduler.stepsTaken`) become `steps`, returned in `RoundsResult.steps` and shown by `describe`. To replay a round with `runScenario`, pass that `steps`.
+
+**Bounded exhaustive exploration (D-32).** With `explore = true` (compile with `-d:nimlinearPerturb`; not together with `schedule`), each round's operations run under **every** schedule over the controlled switch points (`perturb()`, `SchedLock`, `SchedCond.wait`, and the `nimlinear/intercept` operations), depth-first with replay, as long as a schedule has at most `preemptions` preemptions (stopping a thread that could have gone on). Each schedule is checked; the first failing one stops the run.
+
+- `RoundsResult.explored` counts the schedules run; `complete` is true when every round ran all its schedules within the bound (false when `maxSchedules` cut a round, or on failure); `schedule` is the thread chosen at each decision of the failing schedule. The same config gives the same schedules in the same order, so a failure repeats exactly.
+- "Exhaustive" is relative to the switch points and to `preemptions`: plain fields, code between two points and relaxed memory stay outside. A bug that needs more preemptions than the bound is not reached (`preemptions = 0` runs only serial schedules).
+- The code under test must be deterministic given the schedule. If a forced choice is not runnable on replay, the run stops with `error` set ("not deterministic") instead of claiming coverage.
+- `reduce = true` (sleep sets): skips schedules that only reorder independent steps. A step is the code from one switch point to the next; its footprint is the object of the intercepted operation it starts with (address, read or write), plus every `release`, `signal`/`broadcast` and recorded invoke/return in it (the history is shared, so steps at operation boundaries never commute). A `perturb()` or a `wait` has no known object and conflicts with everything. Needs `-d:nimlinearInterceptLoads` (otherwise loads are accesses the reduction cannot see; `ValueError`), and assumes shared plain fields are accessed only under a lock or through `Shared[T]`. Measured on `nim-lang/threading` `Chan`: same verdicts and same failing schedules; 3 threads × 2 operations went from 3 861 to 3 376 schedules (bug) and 37 992 to 34 479 (control), 2 threads × 3 operations did not change. Sleep sets alone prune little when most steps touch the history or the same fields; full DPOR would prune more and is not implemented. `noteAccess(obj, write)` (`nimlinear/schedule`) adds an access the scheduler cannot see to the running step. Test: `tests/treduce.nim`.
+- The count grows fast with threads, operations and switch points; keep scenarios small (2–3 threads, 2–3 operations each) and use PCT (`schedule`) for larger ones. `replayShrink` is skipped under `explore`.
+- In `nimlinear/schedule`: `initScheduler(..., explore = true, forced = choices)` runs choice `i` at decision `i` and the default (the current thread if it can go on, else the lowest index) after them; `decisions(s)` returns each `Decision` (`options` in exploration order, `chosen`, `current`), `diverged(s)` says a forced choice was not runnable. Test: `tests/texplore.nim`.
 
 **Replay shrink (D-27).** With `replayShrink = true`, after the history-only shrink, `runRounds` shrinks the failing round's **scenario** (its operations per thread) by running the real code again:
 
@@ -345,7 +362,14 @@ proc describe*[Op, Res](r: RoundsResult[Op, Res]): string
 - On success, `scenario` is the reduced scenario, and `history`/`verdict` are a **real execution** of it; `runScenario(cfg, rounds, scenario, ...)` reproduces it. Bounded by `shrinkTimeout`; each attempt is a full round.
 - Removing an operation shifts the scheduler's change points, so the bug can move and a removal be rejected for that reason: the result is reproducible, not minimal. The history-only `shrink` usually gives a smaller history; `original` keeps the recorded one.
 
-`RoundsResult` has `passed`, `rounds`, `seed`, `error`, `verdict`, `history` (shrunk), `original`, `scenario`, `replay`, `savedTo` and `saveError`; `describe` prints all of it with the timeline. `ThreadHooks(enter, leave)` run at the start and end of each thread, for `nimlinear/schedule`; `leave` runs even if `exec` raised. Example: [`examples/queue_race.nim`](../examples/queue_race.nim).
+`RoundsResult` has `passed`, `rounds`, `seed`, `error`, `verdict`, `history` (shrunk), `original`, `scenario`, `replay`, `savedTo`, `saveError` and `previousRun` (P13: the contents of a `<saveDir>/<name>-seed<s>.inprogress` file left by a run that died; `runRounds` rewrites that file before each round and removes it at the end unless `trackProgress = false`; `progressPath(cfg)` gives its path), `trace`/`traceDropped`/`traceSavedTo` (under `schedule`, the switch points of the failing round, P12: `describe` shows the last 30, and the whole trace is saved as `<name>-seed<s>-round<r>.trace.txt`; `formatTrace(trace, dropped, last)` prints it; it is the trace of the recorded round, not of the shrunk history), `originalSavedTo` (the recorded history, saved as `<name>-seed<s>-round<r>.original.jsonl` next to the shrunk one when they differ); `describe` prints all of it with the timeline. `ThreadHooks(enter, leave)` run at the start and end of each thread, for `nimlinear/schedule`; `leave` runs even if `exec` raised.
+
+`warnings` lists signs that a run tested less than it seems, and `describe` prints them as `warning:` lines, on pass and on failure:
+- the run used the OS scheduler only (no `schedule`, no `explore`, no `-d:nimlinearPerturb` or `-d:nimlinearStrict`);
+- `schedule` calibrated round 1 to zero switch points (the code under test is not intercepted in this build);
+- `explore` passed with a single schedule per round.
+
+`originalVerdict` is the verdict of `original`. When the shrunk history has 3 operations or fewer and the recorded one has more, `describe` also prints the recorded history's timeline, because a tiny shrunk history can look impossible without its context. A failing schedule longer than 60 decisions is printed as its last 60 (the whole one stays in `schedule`). Test: `tests/tstrict.nim`, `tests/tusability.nim`. Example: [`examples/queue_race.nim`](../examples/queue_race.nim).
 
 ### JSON: `toJsonLines` and `parseJsonLines`
 
@@ -396,7 +420,7 @@ proc leave*(s: var Scheduler) {.raises: [].}                 # last call in each
 - One scheduler at a time: `initScheduler` raises `ValueError` while another one is installed.
 - Same seed, same threads, same code: same interleaving, so the `Recorder` history is the same byte for byte.
 - **Rule:** between `enter` and `leave`, a thread must not block in the OS waiting for another registered thread (no joins, no blocking reads, no `perturb()` while holding a plain `Lock` others take). Otherwise the round hangs. Locks of the object under test should be `SchedLock`.
-- Switches happen only at `perturb()`, `enter`, `leave` and `SchedLock.acquire`. Code between two points runs atomically under the scheduler: a bug whose window has no point is not explored.
+- Switches happen only at `perturb()`, `enter`, `leave`, `SchedLock.acquire` and `SchedCond.wait`. Code between two points runs atomically under the scheduler: a bug whose window has no point is not explored.
 - `SchedLock` (M19): a lock that cooperates with the scheduler. Under an active scheduler, `acquire` is a switch point and, if the lock is held, the thread waits by yielding (it is not picked again until the lock is free). Without a scheduler it is an ordinary `Lock`. Use it for the locks of the object under test; then `perturb()` inside critical sections is safe. If every unfinished thread waits on a held `SchedLock`, the code under test deadlocked: the scheduler sets `deadlocked = true` and wakes one waiter so the round ends.
 
 ```nim
@@ -408,7 +432,20 @@ proc release*(l: var SchedLock) {.raises: [].}
 template withLock*(l: var SchedLock, body: untyped)
 ```
 
-- Example: [`examples/queue_pct.nim`](../examples/queue_pct.nim); `SchedLock` test: `tests/tschedule.nim`.
+- `SchedCond`: a condition variable used with a `SchedLock`. Under an active scheduler, `wait` releases the lock, marks the thread as waiting (it is not picked again until `signal` or `broadcast` wakes it) and takes the lock again; it is a switch point. `signal` wakes the waiting thread with the lowest index (deterministic); `signal` and `broadcast` are not switch points. Without a scheduler it is an ordinary `Cond`. From an unregistered thread under a scheduler, `wait` returns at once (a spurious wakeup; callers re-check in a loop). If every unfinished thread waits, `deadlocked` is set and the highest-priority waiter wakes spuriously; a lost wakeup in the code under test then loops in its wait loop, as it would hang without the scheduler.
+
+```nim
+type SchedCond* = object
+proc initSchedCond*(c: var SchedCond)
+proc deinitSchedCond*(c: var SchedCond)
+proc wait*(c: var SchedCond, l: var SchedLock) {.raises: [].}
+proc signal*(c: var SchedCond) {.raises: [].}
+proc broadcast*(c: var SchedCond) {.raises: [].}
+```
+
+- **Stuck rounds (P14):** `initScheduler(..., abortOnStuck = true, stepLimit = n)` aborts a round that cannot end: when every unfinished thread waits on a `SchedLock` or a `SchedCond` (deadlock, including a lost wakeup), or past `n` switch points (livelock, or a spin-wait that never sees its condition). Every registered thread then raises `RoundAborted` (a `Defect`, so it needs the default `--panics:off`) at its next switch point, and `abortReason(s)` says why. `runRounds` turns it on under `schedule` and `explore` (`RoundsConfig.stepLimit`, default 1 000 000; 0 = no limit) and catches it: the round fails with `error` = "round aborted by the scheduler: ..." and its seed (or schedule). Without `abortOnStuck` the old behavior stays: `deadlocked` is set and a waiter wakes spuriously. A thread blocked outside the switch points (I/O, a `std/locks` lock, a join) is not seen: it still hangs. Test: `tests/tliveness.nim`.
+- **Trace (P12):** the scheduler records every switch point of the round as a `SwitchPoint` (`step`, `thread`, `kind` such as `"perturb"`, `"load"`, `"store"`, `"acquire"`, `"wait"`, and the `file`/`line` of the call in the code under test). `trace(s)` returns it, `traceDropped(s)` counts points beyond `traceCap` (100 000). `perturb()`, the `nimlinear/intercept` wrappers, `acquire`, `tryAcquire`, `withLock` and `wait` are templates so the location is the caller's; an operation called through a helper proc of the code under test reports the helper's line. The trace belongs to the scheduler only; the checker and the history format do not carry it (D-30).
+- Example: [`examples/queue_pct.nim`](../examples/queue_pct.nim); `SchedLock` test: `tests/tschedule.nim`; `SchedCond` test: `tests/tschedcond.nim`.
 
 ### `nimlinear/intercept` (P6)
 
@@ -419,13 +456,37 @@ when defined(nimlinearIntercept): import nimlinear/intercept
 else: import std/[atomics, locks]
 ```
 
-Compile the test with `-d:nimlinearIntercept -d:nimlinearPerturb` and run rounds under a `Scheduler` (as for `perturb()`). Production builds never import nimlinear.
+Compile the test with `-d:nimlinearIntercept -d:nimlinearStrict` and run rounds under a `Scheduler` (as for `perturb()`). Production builds never import nimlinear.
+
+- **`-d:nimlinearStrict`** is the recommended test define. Inside nimlinear it counts as both `-d:nimlinearPerturb` and `-d:nimlinearInterceptLoads`, so writes, read-modify-writes, loads, locks and conditions are all switch points. The finer defines below still work alone. With loads intercepted, a spin-wait loop cannot run under `schedule` or `explore` (the round ends at `stepLimit` with a message saying so); test such code with random perturbation.
 
 - Without `-d:nimlinearPerturb`: a plain re-export of both modules, no cost.
 - With it: a `perturb()` before every atomic write or read-modify-write (`store`, `exchange`, `compareExchange`, `compareExchangeWeak`, `fetchAdd`, `fetchSub`, `fetchAnd`, `fetchOr`, `fetchXor`, `atomicInc`, `atomicDec`, `+=`, `-=`, `testAndSet`, `clear`), and `Lock` is a `SchedLock` (`initLock`, `deinitLock`, `acquire`, `tryAcquire`, `release`, `withLock` keep their names).
-- Loads get no point; plain (non-atomic) fields are not intercepted, so a race on a plain field shows up only if an intercepted operation sits inside its window.
-- `Cond` is not intercepted: `wait` needs a `std/locks` `Lock`, so code that uses `Cond` with an intercepted `Lock` does not compile. Keep those locks from `std/locks`.
+- Loads get no point by default; plain (non-atomic) fields are not intercepted, so a race on a plain field shows up only if an intercepted operation sits inside its window.
+- `-d:nimlinearInterceptLoads` (opt-in) also puts a point before every atomic `load`. It opens windows between two loads with no write between them (read `head`, read `tail`, decide). Opt-in because loads sit in spin-wait loops: under the PCT scheduler, a high-priority thread spinning on a load can wait forever for a lower-priority one. Use it with random perturbation (no scheduler, `schedule = false`) or on code without spin waits.
+- `Cond` is a `SchedCond` (`initCond`, `deinitCond`, `wait`, `signal`, `broadcast` keep their names), so code with condition variables runs under the scheduler. `-d:nimlinearInterceptNoLocks` keeps `Lock` and `Cond` from `std/locks` and intercepts atomics only; a point inside a critical section can then hang a round under the scheduler, so use it with random perturbation.
 - Use `RoundsConfig(schedule: true)`: `steps` is calibrated to the real number of switch points of a round (D-29). If you wire the scheduler yourself, `steps` must be close to `Scheduler.stepsTaken` of a typical round, **not larger**: change points beyond the end of the round never fire, and a guess of 200 against a real 11 made an injected bug 18 to 37 times rarer ([Measurements](MEASUREMENTS.md#intercepted-atomics-and-locks-p6)). `depth` 3 to 4.
+- **Other atomics modules (P18): `interceptAtomics`.** The drop-in replaces only `std/atomics` and `std/locks`. For a library with its own atomics module (for example `nim-lang/threading`'s `threading/atomics`, where `Atomic[T]` is a `distinct T` and orderings are a `{.pure.}` enum `Ordering`), write a small shim and import it instead of the original:
+  ```nim
+  # myatomics.nim
+  import threading/atomics as ta
+  import nimlinear/intercept
+  interceptAtomics(ta,
+    writes = [store, exchange, compareExchange, compareExchangeWeak, fetchAdd, fetchSub,
+              fetchAnd, fetchOr, fetchXor, atomicInc, atomicDec, `+=`, `-=`],
+    reads = [load], types = [Ordering])
+  ```
+  Without `-d:nimlinearPerturb` the macro expands to `export ta` (no cost). With it, each listed proc becomes a template that puts a switch point on its first argument (the atomic location, so `reduce` sees the object) and calls the original with the same arguments; the trace shows the caller's line. `reads` get a point only with `-d:nimlinearInterceptLoads`, as `load` above. List in `types` any `{.pure.}` enum the code uses unqualified: Nim's `export m except ...` hides its values otherwise (`Acquire` would need `Ordering.Acquire`). Only code that imports the shim is intercepted; files of the library that import the original module directly are not. Checked on `threading/atomics` at `nim-lang/threading` 653c8eb (a load-then-store race found, a CAS loop passing; there the module is deprecated and `smartptrs`/`channels` already import `std/atomics`). Test: `tests/tintercept_custom.nim`.
+- **`Shared[T]`** for plain fields: declare the field as `Shared[T]` and access it as `x[]` / `x[] = v`. With `-d:nimlinearPerturb` every read and write is a switch point (and an access for `reduce`); without it, `Shared[T]` is a plain object of the same size with inline accessors. Production code that does not import nimlinear can define the same type itself:
+  ```nim
+  when defined(nimlinearIntercept): import nimlinear/intercept
+  else:
+    type Shared[T] = object
+      v: T
+    template `[]`[T](s: Shared[T]): T = s.v
+    template `[]=`[T](s: var Shared[T], x: T) = s.v = x
+  ```
+  Reads of a `Shared` are always switch points (unlike atomic loads), so a spin-wait on a `Shared` field needs `explore` or random perturbation rather than PCT. Test: `tests/tshared.nim`.
 - **Plain fields are not intercepted.** A race on a non-atomic field (for example a counter read under one lock and written under another, or read without the lock) is explored only if an intercepted operation or a `perturb()` falls inside its window. Put a `perturb()` between the read and the write of such fields:
   ```nim
   let n = b.consecutive          # plain field

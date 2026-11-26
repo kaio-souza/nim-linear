@@ -17,3 +17,10 @@ suite "intercept off":
       deinitCond c
       deinitLock l
     check not defined(nimlinearPerturb)
+
+  test "Shared[T] is a plain value without -d:nimlinearPerturb":
+    var s: Shared[int]
+    s[] = 1
+    s[] = s[] + 1
+    check s[] == 2
+    check sizeof(Shared[int]) == sizeof(int)

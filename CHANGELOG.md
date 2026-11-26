@@ -12,6 +12,10 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 ### Added
 
+- `-d:nimlinearStrict`: one test define for full interception; inside nimlinear it counts as `-d:nimlinearPerturb` plus `-d:nimlinearInterceptLoads`.
+- `RoundsResult.warnings`, printed by `describe`: the run used the OS scheduler only, round 1 had no switch points under `schedule`, or `explore` found a single schedule per round.
+- `describe` prints the recorded history's timeline when the shrunk history has 3 operations or fewer (`RoundsResult.originalVerdict`), and only the last 60 decisions of a long failing schedule.
+- `interceptAtomics` (`nimlinear/intercept`): switch points on an atomics module other than `std/atomics` (for example `threading/atomics`) through a short shim (P18).
 - Models `Map` (get/put/delete, with `partition` by key), `Stack` (push/pop, optional capacity) and `Semaphore` (tryAcquire/release), with JSON hooks, tests and examples (P2).
 - Default operation generators for the shipped models: `genRegisterOp`, `genEventOp`, `genQueueOp`, `genMapOp`, `genStackOp`, `genSemaphoreOp`, and tunable `randomRegisterOp`, `randomQueueOp`, `randomMapOp` (P3).
 - `RoundsConfig.schedule`, `depth`, `steps`: the round harness runs every round under the PCT scheduler itself, and `steps = 0` calibrates it on round 1 (`RoundsResult.steps`); `Scheduler.stepsTaken` (D-29). A guessed `steps` larger than a round's real switch points made a bug 18–37× rarer in measurements.
@@ -29,6 +33,7 @@ Each release lists what changed for users. Changes to the public API or to the s
 
 ### Changed
 
+- Checker: the memo window is stored inline (no allocation per configuration while overlap stays at 64 operations or fewer) and each configuration is looked up once. About 40 % faster on fully overlapping register histories and 27–32 % on queue histories, with the same peak memory (P9).
 - **Breaking** (models): a `step` or `outcomes` with side effects (reads or writes a global, does I/O) no longer compiles; the checker calls them through a `func` (R8). `-d:nimlinearImpureModel` turns the check off.
 - `Recorder` buffers are padded to separate cache lines: recording overhead down by about a third (R7).
 - Docs: the `order` of `checkPartitioned` is the concatenation of the parts' orders, not a global order; ticks appear once per part (R13).

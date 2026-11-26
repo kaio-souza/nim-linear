@@ -12,10 +12,22 @@
 ## - When a scheduler from `nimlinear/schedule` is active, `perturb()` is its
 ##   scheduling point instead.
 
-when defined(nimlinearPerturb):
+type
+  SwitchPoint* = object
+    ## One switch point of a scheduled round (P12): the thread that reached
+    ## it, what it was and where in the source (the code under test, when it
+    ## calls `perturb()`, an intercepted operation, `acquire` or `wait`).
+    step*: int
+    thread*: int
+    kind*: string        ## "perturb", "store", "load", "acquire", "wait"...
+    file*: string
+    line*: int
+
+when (defined(nimlinearPerturb) or defined(nimlinearStrict)):
   import std/[atomics, os, random]
 
-  type YieldHook* = proc () {.nimcall, gcsafe, raises: [].}
+  type YieldHook* = proc (kind, file: cstring, line: int, obj: pointer, write: bool)
+                        {.nimcall, gcsafe, raises: [].}
     ## Internal: installed by `nimlinear/schedule`.
 
   var gDisabled: Atomic[bool]
@@ -30,10 +42,15 @@ when defined(nimlinearPerturb):
     ## Internal: used by `nimlinear/schedule`. `nil` removes the hook.
     gHook.store(cast[pointer](h))
 
-  proc perturbImpl*() {.raises: [], gcsafe.} =
+  proc perturbImpl*(kind: cstring = "perturb", file: cstring = "", line = 0,
+                    obj: pointer = nil, write = true) {.raises: [], gcsafe.} =
+    ## Internal. `kind`, `file` and `line` name the switch point for the
+    ## scheduler's trace (P12); `obj` and `write` are the object the next
+    ## operation touches (nil: unknown, conflicts with everything), for
+    ## exploration with reduction. The random draw ignores them.
     let h = cast[YieldHook](gHook.load)
     if h != nil:
-      h()
+      h(kind, file, line, obj, write)
       return
     if gDisabled.load: return
     let g = gGen.load + 1        # + 1: a fresh thread (tGen = 0) always seeds
@@ -48,7 +65,8 @@ when defined(nimlinearPerturb):
 
   template perturb*() =
     ## Perturbation point (active: compiled with -d:nimlinearPerturb).
-    perturbImpl()
+    const ii = instantiationInfo(-1)
+    perturbImpl("perturb", ii.filename.cstring, ii.line)
 
   proc setPerturbation*(enabled: bool, seed = 0) {.raises: [].} =
     ## Turns the random draw on or off and sets its seed. Threads pick up the
