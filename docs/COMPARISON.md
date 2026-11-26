@@ -23,7 +23,7 @@ Review of 2026-11-22, after M0–M13; status updated after M14–M24 the same da
 | Visualization | ASCII timeline + HTML (M18) | HTML | SVG | trace text |
 | Recorder for real threads | yes (M7) | user code | Jepsen | built in |
 | Operation and scenario generation | round harness with user generator (M17) | no | Jepsen generators | yes |
-| Controlled scheduling | PCT at manual points, `SchedLock` (M13, M19), atomics and locks intercepted without edits (P6, `nimlinear/intercept`) | no | no | model checking, intercepts locks |
+| Controlled scheduling | PCT at manual points, `SchedLock`/`SchedCond` (M13, M19, D-31), atomics, locks and conditions intercepted without edits (P6, `nimlinear/intercept`); bounded exhaustive exploration of small scenarios (D-32) | no | no | model checking, intercepts locks |
 | Linear-time on long histories | yes (M22), except many pending ops | measured superlinear (shape C) | not measured | n/a |
 | Saved format with a version | yes (M15) | n/a | EDN | n/a |
 
@@ -59,7 +59,7 @@ Each gap has a milestone in the [Roadmap](../CONTRIBUTING.md#roadmap). All eleve
 6. **Wall-clock timeout (M20).** Only the state budget exists. It is deterministic but hard to size. Direction: an optional `timeout` next to `budget`, returning `vkInconclusive`; document that a timeout makes the verdict depend on the machine.
    **Status:** done.
 7. **Scheduler and locks (M19).** Under `nimlinear/schedule`, a `perturb()` inside a critical section can hang the round, so bugs inside critical sections are out of reach. Direction: a `SchedLock` that yields to the scheduler while waiting. Also document that switches happen only at points the user placed.
-   **Status:** done (`SchedLock`, deadlock flag). Atomics and locks are now intercepted without edits in the code under test (P6, `nimlinear/intercept`, D-26). Remains: plain (non-atomic) fields and `Cond` are not intercepted; their switch points are still placed by hand (see [Probabilistic coverage](#probabilistic-coverage-of-pct)).
+   **Status:** done (`SchedLock`, deadlock flag). Atomics and locks are now intercepted without edits in the code under test (P6, `nimlinear/intercept`, D-26). `Cond` is intercepted as `SchedCond`, atomic loads with the opt-in `-d:nimlinearInterceptLoads`, and plain fields declared as `Shared[T]`. Remains: plain fields of other types are not intercepted; their switch points are still placed by hand (see [Probabilistic coverage](#probabilistic-coverage-of-pct)).
 8. **Scalability on long histories (M22).** See [Measurements](MEASUREMENTS.md#benchmarks): quadratic where it should be linear. Direction: incremental `minRet`, a list of candidate operations instead of a scan from 0, a cheaper configuration key, an `invoke`→`return` table.
    **Status:** done (D-25): 40 000 operations in about 20 ms. Remains: many pending operations in a long history still grow the cost (shape E).
 9. **Benchmarks (M23).** One easy shape, no comparison with Porcupine on the same histories, nothing in CI. Direction: shapes A–C plus partitioned and pending cases, exported as JSON Lines so Porcupine can run them, and a CI job that fails on a large regression.

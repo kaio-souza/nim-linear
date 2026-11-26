@@ -86,6 +86,10 @@ template agree(M, init, genOp, other: untyped) =
     if got.kind != want:
       checkpoint("seed=" & $seed & " oracle=" & $want & " checker=" & $got.kind)
     check got.kind == want
+    let why = verdictContentError(h, init, M, got)   # P8
+    if why.len > 0: checkpoint("seed=" & $seed & ": " & why)
+    check why.len == 0
+    check sameVerdict(got, checkLinearizable(h, init, M))
     if want == vkLinearizable: inc lin else: inc notLin
   check lin > 1000 and notLin > 1000
 

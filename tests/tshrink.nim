@@ -50,3 +50,28 @@ suite "shrink":
     let s = shrink(h, RegState(), RegisterModel)
     check s.events.len <= h.events.len
     check checkLinearizable(s, RegState(), RegisterModel).kind == vkNotLinearizable
+
+import nimlinear/models/boundedqueue
+type QEv = Event[QueueOp, QueueRes]
+proc qop(id, th, inv, ret: int, call: QueueOp, res: QueueRes): seq[QEv] =
+  @[invokeEvent[QueueOp, QueueRes](id, th, inv, call), returnEvent[QueueOp, QueueRes](id, th, ret, res)]
+
+suite "stuckEverFit (R16)":
+  test "true when the observed result fits in some explored order":
+    # Two overlapping dequeues both return 3, one enqueue(3): either may take
+    # it, so the stuck one fitted in the other branch.
+    let h = newHistory(qop(1, 0, 1, 2, enqueue(3), okRes()) &
+                       qop(2, 1, 3, 8, dequeue(), valueRes(3)) &
+                       qop(3, 2, 4, 5, dequeue(), valueRes(3)))
+    let v = checkLinearizable(h, QueueState(capacity: 4), QueueModel)
+    check v.kind == vkNotLinearizable
+    check v.witness.stuck == OpId(3)
+    check v.witness.stuckEverFit
+
+  test "false when no order can produce the observed result":
+    let h = newHistory(qop(1, 0, 1, 2, enqueue(1), okRes()) &
+                       qop(2, 1, 3, 4, dequeue(), valueRes(3)))
+    let v = checkLinearizable(h, QueueState(capacity: 4), QueueModel)
+    check v.kind == vkNotLinearizable
+    check v.witness.stuck == OpId(2)
+    check not v.witness.stuckEverFit

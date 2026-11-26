@@ -142,6 +142,37 @@ How to read it:
 
 Caveats: RSS is what the OS reports, so allocator and GC behaviour count (Go's GC and nimlinear's `--mm:orc` free memory at different times); one machine; one shape per row; `queue_B9` was not measured, since Porcupine times out on it. `kv_D` (the map model) was not measured, because the memory harness does not include it.
 
+## Checker performance (P9, 2026-11-25)
+
+Each P9 step was an experiment, kept only with a clear gain on both `bench` and `memory.nim`. Before and after binaries were built from the same tree, differing only in `src/nimlinear/checker.nim`, and run alternately in one session on the machine above (Nim 2.2.4, `--mm:orc -d:release`). Time: median of 3 interleaved `bench` passes. Memory: median of 5 `memory.nim ... check` processes on the files of one `bench --export` run. This is fewer runs than the 15-run table above, and absolute times in this session were higher than in that table (A n = 16 before P9: 1.44 s here, 1.06 s there), so compare only the two columns with each other.
+
+**P9.1, kept: the window inline in the memo key.** Before: each visited configuration held a heap `seq` for its window, and the search looked each new configuration up twice (`in`, then `incl`). After: the key is `f` (32 bits), the word count, the first window word inline, and a shared, copy-on-write `ref seq` for words 1 and up (nil until the overlap passes 64 operations), so a key is 24 bytes with no allocation; one `containsOrIncl` per configuration. A first version that stored two inline words and a cached hash was faster but used up to 1.8x more memory (A n = 16: 150 MB against 84 MB): every byte of a key is paid for in every slot of the `HashSet`, empty ones included, and the set already stores each key's hash.
+
+| Shape | Size | before | after P9.1 |
+|---|---|---|---|
+| A | n = 12 | 36.0 ms | 23.4 ms |
+| A | n = 14 | 224 ms | 135 ms |
+| A | n = 16 | 1.44 s | 0.86 s |
+| B | n = 8 | 165 ms | 112 ms |
+| B | n = 9 | 1.81 s | 1.32 s |
+| C | 40 000 ops | 28.3 ms | 24.2 ms |
+| E | 4 000 ops | 5.4 ms | 4.6 ms |
+
+| History | before, peak RSS | after P9.1, peak RSS |
+|---|---|---|
+| register A, n = 14 | 22.8 MB | 22.5 MB |
+| register A, n = 16 | 84.5 MB | 84.0 MB |
+| queue B, n = 8 | 39.9 MB | 39.9 MB |
+| queue B, n = 9 | 316 MB | 305 MB |
+| register C, 40 000 ops | 46.1 MB | 46.8 MB |
+| register E, 4 000 ops | 6.3 MB | 6.0 MB |
+
+So time drops by about 40 % on A and 27–32 % on B, and memory is unchanged (within 1.5 %, B n = 9 3 % lower). The memory gap to Porcupine on A and B (previous section) is therefore not the window's allocation, as the roadmap had assumed; it stays unexplained.
+
+**P9.2, dropped: pending operations out of `(f, window)`.** Tried: `f` as the first *completed* unlinearized operation, the pending unlinearized operations below it kept as a sorted list in the key, and tried first as candidates. Correct (oracle and `-d:nimlinearDebug` invariants passed), but against P9.1 it made A and B 6–25 % slower (A n = 16: 0.86 s to 1.03 s) and did not help E (4.6 ms to 5.0 ms): in shape E the search linearizes pending writes as it meets them, so they rarely hold `f` back. The known limit of D-25 (pending operations that are never linearized) stays.
+
+**P9.3, not done: parallel `checkPartitioned`.** No benchmark shape has parts large enough to gain (D partitioned is under 0.1 ms), and it would require thread-safe models for every user. Left until a real case needs it.
+
 ## Round harness cost
 
 R6 and R7, measured with `tests/measure/rounds_cost.nim`:
@@ -202,6 +233,92 @@ The breaker as released still passes with `steps = 12`, depth 4 (0 failures in 2
 **Replay shrink with calibrated steps** (racy counter, 3 × 12 operations, 200 rounds, seeds 1–10, all fail in round 1): `steps = 30` kept 20 (depth 3) and 18 (depth 4) of 36 operations on average; calibrated `steps` kept 19 and 18. No gain: removing operations moves the switch points whatever `steps` is (D-29, consequence).
 
 With interception the failing rounds are the same on every run (reproducible from the seed); under the OS scheduler the bug showed up once in 6 000 rounds and cannot be replayed. 2 000 scheduled rounds took about 0.2 s of main-thread CPU. No code of the breaker was changed besides the two imports, and no `perturb()` was added.
+
+## External code: `nim-lang/threading` `Chan` (2026-11-25)
+
+First test of nimlinear on a library it was not written for. Target: `Chan[int]` of [`nim-lang/threading`](https://github.com/nim-lang/threading), non-blocking `trySend`/`tryRecv` only, checked against the `BoundedQueue` model (`trySend` false = `full`, `tryRecv` false = `empty`). Same machine and toolchain as the benchmarks above; `-d:release --mm:orc`; 4 threads × 6 operations, capacity 4, unless stated. Test program and patched copies were kept outside the repository.
+
+**What was found.** In `channelSend`/`channelReceive`, the non-blocking path checks `isFull`/`isEmpty` before taking the lock. Each check reads `head` and `tail` with two separate loads, and other threads can move both between them, so the pair can describe a state the channel was never in: `tryRecv` returns `false` while the channel holds a message for the whole call, and `trySend` returns `false` while the channel is not full. Present in commits `629e175`, `9c74c61` and `653c8eb` (master at the time of the test). Confirmed without nimlinear by a deterministic program that pauses one thread between the two loads (the only change to the library: that pause point): `tryRecv` returned `false` with item 2 in the channel during the whole call, and `trySend` returned `false` on a 2-slot channel that never held more than 1 item, in 3 of 3 runs. Not reported upstream yet.
+
+| Setup (master `653c8eb` unless stated) | Seeds | Result |
+|---|---|---|
+| Unmodified library, OS scheduler | 3 × 2000 rounds | passed: the window is a few instructions wide |
+| `perturb()` placed by hand between the two loads, random perturbation | 3 × 2000 | failed in 3 of 3 (rounds 2, 26, 30); also on `629e175` and `9c74c61` |
+| Only the import switched to `nimlinear/intercept`, writes intercepted (D-26), no scheduler (`-d:nimlinearInterceptNoLocks`) | 3 × 2000 | passed: no switch point inside the window |
+| Same, plus `-d:nimlinearInterceptLoads` (D-31), random perturbation | 12 × 2000 | failed in 9 of 12 (rounds 33 to 1475), not repeatable by seed |
+| Same, under PCT (`schedule = true`, `Cond` as `SchedCond`, D-31) | 12 × 2000 | **failed in 12 of 12** (rounds 10 to 583), the same round for the same seed in 3 of 3 reruns |
+| Control: PCT as above, with the two unlocked pre-checks removed | 12 × 2000 | passed in 12 of 12 |
+| Exploration (`explore = true`, `preemptions = 2`, D-32), 2 threads × 3 operations, capacity 2 | 20 rounds | failed in round 3 after 847 schedules; control: passed, complete, 4 402 schedules |
+| Exploration, 3 threads × 2 operations, capacity 2 | 10 rounds | failed in round 1 after 3 861 schedules; control: passed, complete, 37 992 schedules |
+| Exploration, 2 threads × 2 operations, capacity 1 | 20 rounds | passed, complete, 4 099 schedules (no failing scenario among those generated) |
+
+How to read it:
+
+- The bug was out of reach for the unmodified library under the OS scheduler, and for interception of writes only. It became reachable with switch points on loads, and repeatable with PCT once `Cond` could run under the scheduler.
+- Under PCT the failing round depends on the seed (10 to 583); exploration finds it in a fixed number of schedules and, on the control, states that every schedule within the bound passes.
+- One run before R16 produced a shrunk history that was not a real failure (`dequeue() -> 3` with no `enqueue(3)` left). That is what R16 fixed. The rows up to the PCT control were measured before the fix; from the `-d:nimlinearInterceptLoads` row on, the recorded (unshrunk) history of every failure was checked and failed with a spurious `empty` or `full` (the hand-placed `perturb()` row was not checked this way).
+- The issue `#24` of that repository (two locks, fixed by `9c74c61`) did not show as a wrong result: both commits fail the same way, through the pre-check.
+
+## External code, second pass: known bugs of `nim-lang/threading` (2026-11-25)
+
+Goal: reproduce bugs already fixed upstream, each against its own fix as the control, to check that the features added after the `Chan` test (`SchedCond`, liveness, `quiescent`, `Shared[T]`, exploration, the watchdog) work on code nimlinear was not written for. Same machine and toolchain as above; `-d:release --mm:orc` unless stated. Test programs and patched copies were kept outside the repository. "Import swapped" means the library's `import std/locks` (and `std/atomics`) line was replaced by `nimlinear/intercept` behind `-d:nimlinearIntercept`, and nothing else.
+
+| Case (buggy → fixed commit) | Change to the library | Buggy | Fixed (same change) |
+|---|---|---|---|
+| `WaitGroup`: `leave` uses `signal` instead of `broadcast`, so with two waiters one sleeps forever (`dfaefbe` → `ad7b416`) | import swapped | exploration: deadlock after 11 schedules (2 waiters) and 85 (3 waiters); PCT: failed in 10 of 10 seeds, rounds 1 to 11; OS scheduler, no interception: hung in round 3, reported by the watchdog (`roundTimeout`, exit 124) | exploration: passed, complete (680 and 23 970 schedules); PCT and OS scheduler: 2000 rounds passed |
+| `SharedPtr` (#45): `=destroy` loads the count, then decrements it, so two owners can both decrement and nobody frees (`148b0da` → `c099fbd`) | one `perturb()` between the two operations | exploration: payload destroyed 0 times after 2 schedules (2 and 3 threads); PCT: failed in round 1 | exploration: passed, complete (18 and 180 schedules); PCT: 500 rounds passed |
+| `SharedPtr` (#45), same | none (OS scheduler, `quiescent` only) | failed in 3 of 6 runs of 20 000 rounds: rounds 18 821 (3 threads), 828 and 5 828 (4 threads); none with 2 threads | 6 of 6 runs of 20 000 rounds passed (2, 3 and 4 threads) |
+| `Chan` destructor (#59): same pattern as #45 (`2ce3d80` → `f9e3ec4`) | one `perturb()` in `=destroy`; ASan build | exploration: failed after 2 schedules (2 and 3 threads); PCT: failed in round 1. The leak is tied to the round by a `quiescent` hook that calls LeakSanitizer (`__lsan_do_recoverable_leak_check`) | exploration: passed, complete (12 and 120 schedules); PCT: 200 rounds passed |
+| `Chan` with two locks (#24, `629e175` → `9c74c61`), pre-checks removed | import swapped; `head`/`tail` declared `Shared[int]` (58 lines, mechanical) | PCT, 4 threads × 6 operations: **a value delivered twice** in 6 of 6 seeds, rounds 18 to 985 | PCT: 6 of 6 seeds passed (2000 rounds each) |
+
+How to read it:
+
+- **#24 is new for nimlinear.** The first test of `Chan` could not show it: with `head`/`tail` as plain `int` (import swapped only), every configuration passed. Declared `Shared[int]`, the two-lock design delivers a value twice under PCT, and the single-lock fix passes under the same changes.
+- **Leaks, not double frees.** #45 describes a double free; in these runs only the leak appeared. With the counter starting at owners − 1, two threads read 0 only after a lost decrement, so under sequential consistency the race loses a free rather than doing one twice.
+- **#45 without any change to the library** was found only with 3 and 4 threads and late (rounds 828 to 18 821): the `quiescent` hook sees the leak whenever the OS happens to interleave the two operations.
+- **Exploration did not reach #24** in small scenarios (2 threads × 3 operations, complete with 2 and 3 preemptions; 3 threads × 2 operations, cut at 10 000 schedules). PCT with 4 threads × 6 operations did.
+- **The pre-check bug with `Shared`.** `9c74c61` with `Shared` fields and the pre-checks kept passed 6 × 2000 PCT rounds, while `master` with intercepted atomic loads fails in 12 of 12 seeds (first section). The probability of PCT reaching a window depends on how many switch points the code has.
+
+Not reproduced:
+
+- **`nim-taskpools` #41** (a worker spinning in work stealing with `chronos` `ThreadSignalPtr`): closed without a fix, so there is no control; it also depends on OS signals outside any switch point.
+- **`Once` (#67)**: the fix is about memory ordering (synchronizes-with); under sequential consistency the old behavior looks correct, so it is outside nimlinear's model.
+
+Limit found: `SharedPtr` and the `Chan` destructor import `threading/atomics`, the library's own atomics module (`Atomic[T]` as `distinct T`, orderings named `Acquire`), not `std/atomics`. `nimlinear/intercept` replaces only `std/atomics` and `std/locks`, so for those files the switch point was placed by hand.
+
+## External code, third pass: four more libraries (2026-11-25)
+
+Goal: run nimlinear on lock-free code it was not written for, beyond `nim-lang/threading`. The four targets were picked because their API maps onto an existing or a small model. Same machine as above, Nim 2.4.2, gcc 15.2, `-d:release --mm:orc` unless stated. In every library the only change is the import line: `std/atomics` becomes `nimlinear/intercept` behind `-d:nimlinearIntercept` (plus the loony compile fix below). "OS" = unmodified build, OS scheduler. "PCT" and "explore" = intercepted build with `-d:nimlinearInterceptLoads`, `schedule = true` or `explore = true` (`preemptions = 2`). Test programs and patched copies were kept outside the repository. Nothing was reported upstream.
+
+| Target (commit) | Model | OS | PCT | Explore | Verdict |
+|---|---|---|---|---|---|
+| `codenimja/nimsync` `Channel`, SPSC (`ee99327`) | `BoundedQueue`, capacity 2; 1 producer, 1 consumer | 3 × 2000 passed | 6 × 2000 passed | 3 × 20 rounds passed, complete (3 080 schedules) | linearizable in what was run |
+| same, MPSC | same; 2 producers, 1 consumer | 3 × 2000 passed | **failed in 6 of 6 seeds** (rounds 1 to 11) | **failed** in 3 of 3, round 1, 203 schedules | **two bugs**, below |
+| `Araq/malebolgia` `TicketLock`, `TicketRWLock` (`561ae24`) | counter guarded by the lock (`Shared[int]` in the test, so the critical section has switch points) | 3 × 2000 passed | not usable: spin-wait (below) | not usable: spin-wait | passed 6 × 3000 rounds with random perturbation (intercepted build, no scheduler) |
+| `status-im/nim-taskpools` `ChaseLevDeque` (`306cf82`) | deque: owner `push`/`pop`, other threads `steal`; `push` returns `wasEmpty` | 4 × 2000 passed (1 and 2 thieves) | 1 thief: 4 × 2000 passed. 2 thieves: passed with ABORT in the model (below) | 1 thief: complete, ~5 600 schedules per seed; 2 thieves with ABORT: complete, ~85 000 | linearizable, ABORT included; initial capacities 1, 2, 4, 8 (buffer growth) |
+| `nim-works/loony` `LoonyQueue` (`b60da76`, `arc` `0728843`) | `BoundedQueue` with a capacity no round reaches (unbounded MPMC); `pop() = nil` = empty | 4 × 2000 passed | **failed in 12 of 12 seeds** (rounds 1 to 40) | **failed** in 3 of 3 (49 to 357 schedules) | **spurious empty**, below |
+
+**nimsync MPSC, bug 1: spurious `full`.** `trySendMPSC` reserves a slot with `mpscCount.fetchAdd(1)` and, if the count was already at capacity, undoes it with `fetchSub(1)`. Between the two, another producer sees the inflated count and returns `false` on a channel that is not full. Recorded history (seed 1, round 9): the consumer drains the channel, `enqueue(0) -> ok` leaves 1 item of 2, then `enqueue(1) -> full`; the trace shows the concurrent, failing send of thread 1 between its `fetchAdd` (`channel_spsc.nim:82`) and `fetchSub` (`:85`).
+
+**nimsync MPSC, bug 2: spurious `empty`.** `tryReceiveMPSC` returns `false` when the slot at `tail` is claimed but not yet published (code comment: "Producer in-flight, try again later"), even when the channel holds published items. When another operation fixes that the in-flight item already counts (here a `full` that needs it), the `empty` has no linearization. Control: a copy with bug 1 fixed (reservation by a CAS loop that never goes above capacity). Over 12 PCT seeds, the original failed 5 times with `full` and 7 with `empty`; the control failed 12 times, all `empty`. So the CAS fixes bug 1, and bug 2 stays. The comment suggests the behavior is intended, but the API does not say that `tryReceive` can fail on a non-empty channel. Not confirmed yet by a program without nimlinear.
+
+**Chase-Lev ABORT, expected.** With 2 thieves and a model where `steal` only returns nothing on an empty deque, PCT failed in 4 of 4 seeds and exploration in 4 of 4. The shrunk history is a `steal` that lost its CAS on `top` to another thief and returned 0 while items remained. This is the ABORT outcome of the algorithm (Lê et al. 2013), which the library maps to the same `default(T)` as "empty". With ABORT as a second `outcomes` branch of `steal` (allowed only on a non-empty deque), every run passed. `wasEmpty` was checked as part of the result (true when the deque was empty at the push) and passed.
+
+**loony: spurious empty in `pop`.** `popImpl` reads `tail`, then `head`, then calls `isEmptyImpl(head, tail)`. If other threads push and pop between the two loads, `head` can pass the stale `tail`, and `pop` returns `nil` on a queue that was never empty during the call. Recorded history (seed 1, round 22): `dequeue()` of thread 0 runs from seq 5 to 26, while the queue holds 2 to 4 items. The trace shows thread 0 loading `tail` (`loony.nim:71`) at step 5 and paused before its `head` load (`:75`) until step 35.
+
+- **Confirmed without nimlinear:** a deterministic program on a copy whose only change is a pause point after `fetchTail` in `popImpl`. Thread A pops from `[1]` and pauses; the main thread pushes 2 and pops 1; A resumes and gets `nil` while 2 is still in the queue. Result: 3 of 3 runs.
+- **Control:** the same copy with the two loads swapped (`head` first, then `tail`; both only grow, so a `head` at or past a later `tail` means the queue was empty at the second load). PCT: 4 × 2000 passed. Exploration: 3 × 20 rounds passed, complete (about 2 600 schedules each).
+
+Open, not diagnosed:
+
+- **Small nodes.** With `-d:loonySlotCount=4 -d:loonyNodeAlignment=6 -d:loonyRotate=false` (node changes in almost every round), a debug build of the control still fails under PCT with a spurious empty (3 of 3 seeds, rounds 57 to 459). So the node-change path (`advHead`) seems to have a second window. The release build of the same configuration ends in SIGSEGV under the scheduler (original and control), not under the OS scheduler. The cause, loony or the scheduler, is not known. `loonySlotCount=4` with rotation on is not a valid configuration (`rShiftBits` is negative; the library's static checks do not catch it), so it was not used.
+- **Compile fix.** loony at `b60da76` does not compile with Nim 2.4.2 and gcc 15 (its own `tests/test.nim` neither): `template node(tag) = cast[ptr Node](nptr(tag))[]` becomes `&` of an rvalue in C. All loony rows use a copy where the cast goes through a one-line `proc` (`nodeAt`).
+
+What this pass showed about nimlinear:
+
+- **Spin-waits cannot run under the scheduler.** `TicketLock.acquire` spins on `nowServing.load`. Under PCT every round ends in the step limit ("no end after 100000 switch points"). Exploration aborts after 2 schedules too: its default choice keeps running the current thread, so a thread that spins while another holds the lock never gives way. Only random perturbation works for these locks. This matches what the [API](API.md) says for PCT. For exploration, the API says a spin-wait on a `Shared` field "needs `explore`". That case was not tested here, but an atomic spin-wait does not work under exploration.
+- **Size of the report on a livelock.** The `describe` of an exploration that hit the step limit prints the whole failing schedule (one entry per switch point): about 290 KB for one round.
+- **Cost.** A loony round under PCT takes about 30 ms (one 1 024-slot node per round), against about 0.15 ms for the other targets.
 
 ## Limits of these numbers
 

@@ -108,6 +108,23 @@ If the bug you care about has a narrow window (between reading and changing shar
 
 To make rounds reproducible, run them under the PCT scheduler: `RoundsConfig(schedule: true, depth: 3)` does it for you and calibrates `steps` (D-29). To wire it yourself, create a `Scheduler` from `nimlinear/schedule` in a `setup` that takes a `RoundInfo` (`proc setup(q: var MyQueue, info: RoundInfo)`) with `initScheduler(threads, info.seed)`, so each round gets its own interleaving, remove it in `teardown`, and register the threads through `ThreadHooks`. With the same seed, a round produces the same history byte for byte. Replace the object's locks with `SchedLock`, so that `perturb()` can also go inside critical sections. To avoid editing the object at all, import `nimlinear/intercept` instead of `std/atomics`/`std/locks` in a test build: every atomic write and lock acquire becomes a switch point ([API](API.md#nimlinearintercept-p6)) (see [API](API.md#nimlinearschedule-m13)). Examples: [`examples/queue_pct.nim`](../examples/queue_pct.nim), [`tests/trounds.nim`](../tests/trounds.nim).
 
+## Step 5c (optional): crashes and sanitizers
+
+A memory bug (use after free, double free, a race on a reference count) usually crashes the process instead of returning a wrong result, and a crash ends the run before `runRounds` can report a seed. So `runRounds` writes the seed and round to `<saveDir>/<name>-seed<s>.inprogress` before every round and deletes it when the run ends (P13, `RoundsConfig.trackProgress`, on by default). After a crash the file names the round that was running; the next run with the same `saveDir` and `name` reports it in `RoundsResult.previousRun` and in `describe`. Under `schedule` or `explore` that round repeats exactly with `rounds` set to it.
+
+Sanitizers see memory errors that do not crash, and the controlled scheduler drives interleavings they would rarely see on their own. Build the test with GCC or Clang on Linux or macOS:
+
+```sh
+# AddressSanitizer: use after free, double free, overflow
+nim c -r --threads:on -d:useMalloc --debugger:native \
+  --passC:-fsanitize=address --passL:-fsanitize=address tests/my_test.nim
+# ThreadSanitizer: data races
+nim c -r --threads:on -d:useMalloc --debugger:native \
+  --passC:-fsanitize=thread --passL:-fsanitize=thread tests/my_test.nim
+```
+
+`-d:useMalloc` makes Nim allocate with `malloc`, which the sanitizers track. Checked on 2026-11-25 (GCC, Linux): an injected use after free in round 4 was reported by ASan with the line of the bug, and the `.inprogress` file named round 4; a `runRounds` program with 3 threads ran under TSan with no report from nimlinear itself. Not checked: TSan together with `schedule`/`explore`, MSVC (Windows has no equivalent flags here).
+
 ## Step 6: CI
 
 - Run the test only with `--threads:on`; with `off`, use `skip()`.

@@ -110,6 +110,24 @@ func outcomes(m: typedesc[AllocModel], s: AllocState, op: AllocOp): seq[Expected
 
 The real allocator must draw from the same pool in the test (pass it at construction). A pending `alloc` is explored as taking each free id or none, so it stays sound: another operation that observed its id is explained. Keep pools small (3 to 8): each free id is a branch.
 
+### From a sequential implementation (P10)
+
+When a correct sequential version of the structure already exists, `nimlinear/seqmodel` builds the model from it instead of a hand-written `step`:
+
+```nim
+import nimlinear/seqmodel
+type SeqQueue = object          # copied by value: no ref or ptr inside
+  items: seq[int]
+  capacity: int
+proc apply(q: var SeqQueue, op: QueueOp): QueueRes = ...   # one operation, sequentially
+func hash(q: SeqQueue): Hash = ...                         # `==` is Nim's field equality
+
+sequentialModel(QueueSpec, SeqQueue, QueueOp, QueueRes, apply)
+discard checkLinearizable(h, SeqQueue(capacity: 4), QueueSpec)
+```
+
+The generated `step` copies the state (`var next = s`), applies the operation to the copy and returns its result. Requirements: the state is a value (a `ref` or `ptr` inside is shared between copies and corrupts memoized states; `-d:nimlinearDebug` checks that `apply` did not change the state it was given); `hash` and `==` by value; `apply` deterministic and without side effects; and the sequential version must be correct, since a bug present in it and in the concurrent code is invisible. It costs one copy of the state per checker step, so a hand-written model is still the default for large states. Tested against `BoundedQueue` on 10 000 random histories (`tests/tseqmodel.nim`).
+
 ## Writing a model, step by step
 
 1. **List the public operations** of the data structure. One line per operation, with arguments and return value.
