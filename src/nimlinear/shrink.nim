@@ -9,12 +9,7 @@
 ## Why the "same stuck operation" guard: removing an operation can create a
 ## failure that was not in the original (drop the only `write(1)` and a
 ## `read() -> 1` becomes unexplainable). Requiring the same stuck operation
-## and the same expected result for it rejects most of those removals. Also
-## required (R16): whether the stuck operation's observed result fits the
-## model in some explored configuration (`Witness.stuckEverFit`) stays the
-## same. Without it, dropping the only `enqueue(3)` turns a `dequeue() -> 3`
-## in the wrong order into one no order can explain, with the same expected
-## result. It is a heuristic, not a proof: always confirm the
+## and the same expected result for it rejects most of those removals. It is a heuristic, not a proof: always confirm the
 ## shrunk history against the original report.
 ##
 ## Removing an operation removes all of its events, so every intermediate
@@ -27,12 +22,10 @@ type Signature[Res] = object
   fails: bool
   stuck: OpId
   expected: Res     # what the model expected from the stuck operation
-  everFit: bool     # its observed result matched the model somewhere (R16)
 
 proc `==`[Res](a, b: Signature[Res]): bool =
   mixin `==`
-  a.fails == b.fails and a.stuck == b.stuck and a.expected == b.expected and
-    a.everFit == b.everFit
+  a.fails == b.fails and a.stuck == b.stuck and a.expected == b.expected
 
 proc stuckOf[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
                          budget: int, partitioned: bool, timeout: Duration): Signature[Res] =
@@ -43,8 +36,7 @@ proc stuckOf[S, Op, Res](h: History[Op, Res], init: S, model: typedesc,
   else:
     v = checkLinearizable(h, init, model, budget, timeout)
   if v.kind == vkNotLinearizable:
-    result = Signature[Res](fails: true, stuck: v.witness.stuck,
-                            everFit: v.witness.stuckEverFit)
+    result = Signature[Res](fails: true, stuck: v.witness.stuck)
     for a in v.witness.alternatives:
       if a.candidate == v.witness.stuck:
         result.expected = a.expected
