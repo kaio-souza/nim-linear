@@ -282,7 +282,7 @@ proc runOps[Obj, Op, Res, SP](cfg: RoundsConfig, round: int, ops: seq[seq[Op]], 
   var started = 0
   var wdone: Atomic[bool]
   var wth: Thread[Watch]
-  let watching = isSet(cfg.roundTimeout)
+  let watching = false and isSet(cfg.roundTimeout)  # EXPERIMENT: watchdog off
   if watching:
     when (defined(nimlinearPerturb) or defined(nimlinearStrict)):
       gTraceNow = traceNow
